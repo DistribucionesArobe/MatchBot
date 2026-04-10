@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MatchBot Admin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --brand: #10b981;
+            --brand-dark: #059669;
+            --brand-light: #d1fae5;
+            --brand-50: #ecfdf5;
+            --accent: #f59e0b;
+            --accent-light: #fef3c7;
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --border: #e2e8f0;
+            --border-light: #f1f5f9;
+            --text: #1e293b;
+            --text-secondary: #64748b;
+            --text-muted: #94a3b8;
+            --danger: #ef4444;
+            --danger-light: #fef2f2;
+            --info: #3b82f6;
+            --info-light: #eff6ff;
+            --sidebar-w: 64px;
+            --sidebar-expanded: 240px;
+        }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
+
+        /* ═══ SIDEBAR — icon-rail style ═══ */
+        .sidebar {
+            width: var(--sidebar-expanded);
+            background: var(--text);
+            display: flex; flex-direction: column;
+            transition: width 0.2s;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+        .sidebar-brand {
+            padding: 20px 16px;
+            display: flex; align-items: center; gap: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .sidebar-brand .brand-dot {
+            width: 36px; height: 36px; border-radius: 10px;
+            background: var(--brand);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 800; font-size: 18px; color: #fff;
+            flex-shrink: 0;
+        }
+        .sidebar-brand .brand-text {
+            font-size: 17px; font-weight: 700; color: #fff;
+            white-space: nowrap;
+        }
+        .sidebar-brand .brand-sub {
+            font-size: 11px; color: var(--text-muted); margin-top: 1px;
+        }
+        .sidebar-nav { flex: 1; padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+        .nav-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 10px 12px; border-radius: 8px;
+            color: rgba(255,255,255,0.5); cursor: pointer;
+            font-size: 14px; font-weight: 500;
+            transition: all 0.15s; text-decoration: none;
+            white-space: nowrap;
+        }
+        .nav-item:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.85); }
+        .nav-item.active { background: var(--brand); color: #fff; font-weight: 600; }
+        .nav-item svg { width: 20px; height: 20px; flex-shrink: 0; }
+        .sidebar-footer {
+            padding: 16px; border-top: 1px solid rgba(255,255,255,0.08);
+            font-size: 11px; color: rgba(255,255,255,0.25);
+        }
+
+        /* ═══ MAIN ═══ */
+        .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+        /* ═══ TOPBAR ═══ */
+        .topbar {
+            height: 56px; background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 24px; flex-shrink: 0;
+        }
+        .topbar-left { display: flex; align-items: center; gap: 16px; }
+        .topbar-title { font-size: 18px; font-weight: 700; color: var(--text); }
+        .topbar-right { display: flex; align-items: center; gap: 12px; }
+
+        .date-nav { display: flex; align-items: center; gap: 6px; }
+        .date-nav button {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 8px; padding: 6px 12px; cursor: pointer;
+            font-size: 13px; color: var(--text-secondary); font-weight: 500;
+            transition: all 0.15s;
+        }
+        .date-nav button:hover { background: var(--bg); border-color: var(--text-muted); }
+        .date-nav .today-btn { background: var(--brand); color: #fff; border-color: var(--brand); font-weight: 600; }
+        .date-nav .today-btn:hover { background: var(--brand-dark); }
+        .date-display { font-size: 15px; font-weight: 600; min-width: 200px; text-align: center; }
+
+        .pill {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 4px 12px; border-radius: 20px;
+            font-size: 12px; font-weight: 600;
+        }
+        .pill-green { background: var(--brand-light); color: var(--brand-dark); }
+        .pill-amber { background: var(--accent-light); color: #92400e; }
+
+        /* ═══ PAGE CONTENT ═══ */
+        .page { flex: 1; overflow: auto; display: none; }
+        .page.active { display: flex; flex-direction: column; }
+
+        /* ═══ CALENDAR ═══ */
+        .cal-wrap { flex: 1; overflow: auto; }
+        .cal-grid { min-width: 860px; }
+        .cal-header {
+            display: grid; position: sticky; top: 0; z-index: 10;
+            background: var(--surface); border-bottom: 2px solid var(--border);
+        }
+        .cal-header-cell {
+            padding: 14px 8px; text-align: center;
+            font-size: 13px; font-weight: 600; color: var(--text-secondary);
+        }
+        .cal-header-cell .ch-type {
+            font-size: 10px; font-weight: 400; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px;
+        }
+        .cal-row {
+            display: grid; border-bottom: 1px solid var(--border-light);
+            min-height: 54px;
+        }
+        .cal-time {
+            padding: 6px 10px; font-size: 11px; color: var(--text-muted);
+            font-weight: 600; border-right: 1px solid var(--border);
+            background: var(--surface); letter-spacing: 0.3px;
+        }
+        .cal-cell {
+            padding: 3px; border-right: 1px solid var(--border-light);
+            cursor: pointer; transition: background 0.1s;
+            position: relative;
+        }
+        .cal-cell:hover { background: var(--brand-50); }
+
+        /* Booking cards */
+        .bk {
+            border-radius: 8px; padding: 6px 8px; font-size: 11px;
+            cursor: pointer; height: 100%; transition: transform 0.1s, box-shadow 0.1s;
+            position: relative; overflow: hidden;
+        }
+        .bk:hover { transform: scale(1.02); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .bk-confirmed { background: var(--brand-light); border-left: 3px solid var(--brand); }
+        .bk-pending { background: var(--accent-light); border-left: 3px solid var(--accent); }
+        .bk-campamento { background: var(--info-light); border-left: 3px solid var(--info); }
+        .bk-torneo { background: #fae8ff; border-left: 3px solid #a855f7; }
+        .bk .bk-name { font-weight: 700; color: var(--text); margin-bottom: 1px; }
+        .bk .bk-time { color: var(--text-secondary); font-size: 10px; }
+        .bk .bk-badge {
+            display: inline-block; padding: 1px 6px; border-radius: 4px;
+            font-size: 9px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.3px; margin-top: 3px;
+        }
+        .badge-unpaid { background: #fca5a5; color: #7f1d1d; }
+        .badge-paid { background: #86efac; color: #14532d; }
+
+        /* ═══ GENERIC SECTION STYLES ═══ */
+        .section-wrap { padding: 24px; overflow: auto; flex: 1; }
+        .section-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 20px;
+        }
+        .section-header h2 { font-size: 20px; font-weight: 700; }
+        .card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 20px; margin-bottom: 16px;
+        }
+        .card h3 { font-size: 15px; font-weight: 700; margin-bottom: 12px; color: var(--text); }
+        .card-subtitle { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+
+        /* Tables */
+        .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .tbl th {
+            text-align: left; padding: 10px 12px;
+            font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+            color: var(--text-muted); border-bottom: 2px solid var(--border);
+            font-weight: 600;
+        }
+        .tbl td { padding: 10px 12px; border-bottom: 1px solid var(--border-light); }
+        .tbl tr:hover { background: var(--bg); }
+
+        /* Form elements */
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+        .form-group { margin-bottom: 12px; }
+        .form-group label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.3px; }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%; padding: 8px 12px; border: 1px solid var(--border);
+            border-radius: 8px; font-size: 14px; color: var(--text);
+            transition: border-color 0.15s;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none; border-color: var(--brand);
+            box-shadow: 0 0 0 3px var(--brand-light);
+        }
+        .btn {
+            padding: 8px 16px; border: none; border-radius: 8px;
+            font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+            display: inline-flex; align-items: center; gap: 6px;
+        }
+        .btn-brand { background: var(--brand); color: #fff; }
+        .btn-brand:hover { background: var(--brand-dark); }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
+        .btn-outline:hover { background: var(--bg); }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .dot-green { background: var(--brand); }
+        .dot-amber { background: var(--accent); }
+        .dot-red { background: var(--danger); }
+
+        /* Tabs inside config */
+        .config-tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
+        .config-tab {
+            padding: 10px 16px; font-size: 13px; font-weight: 600;
+            color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+            margin-bottom: -2px; transition: all 0.15s;
+        }
+        .config-tab:hover { color: var(--text-secondary); }
+        .config-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+        .config-panel { display: none; }
+        .config-panel.active { display: block; }
+
+        /* ═══ MODAL ═══ */
+        .modal-bg { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.5); z-index: 100; align-items: center; justify-content: center; }
+        .modal-bg.open { display: flex; }
+        .modal-box {
+            background: var(--surface); border-radius: 16px; width: 440px;
+            max-height: 90vh; overflow-y: auto;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.25);
+        }
+        .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .modal-head h3 { font-size: 16px; font-weight: 700; }
+        .modal-x { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--text-muted); line-height: 1; }
+        .modal-body { padding: 20px; }
+        .modal-foot { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+
+        /* ═══ MONEDERO BALANCE ═══ */
+        .wallet-balance {
+            font-size: 28px; font-weight: 800; color: var(--brand);
+        }
+        .wallet-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    </style>
+</head>
+<body>
+
+<!-- ═══════════ SIDEBAR ═══════════ -->
+<aside class="sidebar">
+    <div class="sidebar-brand">
+        <div class="brand-dot">M</div>
+        <div>
+            <div class="brand-text">MatchBot</div>
+            <div class="brand-sub">Club de Padel Victoria</div>
+        </div>
+    </div>
+    <nav class="sidebar-nav">
+        <a class="nav-item active" onclick="switchPage('calendario')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            Calendario
+        </a>
+        <a class="nav-item" onclick="switchPage('clientes')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Clientes
+        </a>
+        <a class="nav-item" onclick="switchPage('monederos')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="17" cy="15" r="1"/></svg>
+            Monederos
+        </a>
+        <a class="nav-item" onclick="switchPage('patrocinios')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            Patrocinios
+        </a>
+        <a class="nav-item" onclick="switchPage('reportes')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            Reportes
+        </a>
+        <a class="nav-item" onclick="switchPage('config')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Configuraci&oacute;n
+        </a>
+    </nav>
+    <div class="sidebar-footer">matchbot.live v1.0</div>
+</aside>
+
+<!-- ═══════════ MAIN ═══════════ -->
+<div class="main">
+
+<!-- TOPBAR -->
+<header class="topbar">
+    <div class="topbar-left">
+        <span class="topbar-title" id="pageTitle">Calendario</span>
+    </div>
+    <div class="topbar-right" id="topbarRight">
+        <span class="pill pill-green" id="statBookings">0 reservas</span>
+        <span class="pill pill-amber" id="statRevenue">$0</span>
+        <div class="date-nav" id="dateNav">
+            <button class="today-btn" onclick="goToday()">Hoy</button>
+            <button onclick="changeDate(-1)">&#9664;</button>
+            <span class="date-display" id="dateDisplay"></span>
+            <button onclick="changeDate(1)">&#9654;</button>
+        </div>
+    </div>
+</header>
+
+<!-- ═══════════ PAGE: CALENDARIO ═══════════ -->
+<div class="page active" id="page-calendario">
+    <div class="cal-wrap">
+        <div class="cal-grid" id="calGrid"></div>
+    </div>
+</div>
+
+<!-- ═══════════ PAGE: CLIENTES ═══════════ -->
+<div class="page" id="page-clientes">
+    <div class="section-wrap">
+        <div class="section-header">
+            <h2>Clientes</h2>
+            <div style="display:flex;gap:8px;">
+                <input type="text" placeholder="Buscar por nombre o tel..." style="padding:7px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:260px;" id="clientSearch" oninput="filterClients()">
+            </div>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;">
+            <table class="tbl" id="clientsTable">
+                <thead>
+                    <tr><th>Nombre</th><th>Telefono</th><th>Reservas</th><th>Gastado</th><th>Ultima reserva</th><th>Monedero</th></tr>
+                </thead>
+                <tbody id="clientsBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════ PAGE: MONEDEROS ═══════════ -->
+<div class="page" id="page-monederos">
+    <div class="section-wrap">
+        <div class="section-header">
+            <h2>Monederos</h2>
+            <button class="btn btn-brand" onclick="openWalletModal()">+ Agregar saldo</button>
+        </div>
+        <div class="card-subtitle">Saldo prepagado de clientes. Pueden pagar reservas con su monedero.</div>
+
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;">
+            <div class="card">
+                <div class="wallet-label">Saldo total en monederos</div>
+                <div class="wallet-balance" id="walletTotal">$4,200</div>
+            </div>
+            <div class="card">
+                <div class="wallet-label">Clientes con saldo</div>
+                <div class="wallet-balance" id="walletClients">8</div>
+            </div>
+            <div class="card">
+                <div class="wallet-label">Recargas este mes</div>
+                <div class="wallet-balance" id="walletRecharges">12</div>
+            </div>
+        </div>
+
+        <div class="card" style="padding:0;overflow:hidden;">
+            <table class="tbl">
+                <thead><tr><th>Cliente</th><th>Telefono</th><th>Saldo</th><th>Ultima recarga</th><th>Acciones</th></tr></thead>
+                <tbody id="walletsBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════ PAGE: PATROCINIOS ═══════════ -->
+<div class="page" id="page-patrocinios">
+    <div class="section-wrap">
+        <div class="section-header">
+            <h2>Patrocinios</h2>
+            <button class="btn btn-brand" onclick="openSponsorModal()">+ Nuevo patrocinio</button>
+        </div>
+        <div class="card-subtitle">Control de patrocinadores de canchas: quienes pagan, cuanto, y si estan al corriente.</div>
+
+        <div class="card" style="padding:0;overflow:hidden;">
+            <table class="tbl">
+                <thead>
+                    <tr><th>Cancha</th><th>Patrocinador</th><th>Contacto</th><th>Monto mensual</th><th>Vigencia</th><th>Status pago</th><th>Acciones</th></tr>
+                </thead>
+                <tbody id="sponsorsBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════ PAGE: REPORTES ═══════════ -->
+<div class="page" id="page-reportes">
+    <div class="section-wrap">
+        <div class="section-header"><h2>Reportes</h2></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;">
+            <div class="card"><div class="wallet-label">Reservas hoy</div><div class="wallet-balance" id="rptToday">5</div></div>
+            <div class="card"><div class="wallet-label">Ingreso hoy</div><div class="wallet-balance" id="rptRevenue">$2,150</div></div>
+            <div class="card"><div class="wallet-label">Reservas semana</div><div class="wallet-balance" id="rptWeek">32</div></div>
+            <div class="card"><div class="wallet-label">Ocupacion hoy</div><div class="wallet-balance" id="rptOccupancy">38%</div></div>
+        </div>
+        <div class="card">
+            <h3>Reservas por cancha (hoy)</h3>
+            <div id="chartByCourt" style="display:flex;gap:8px;align-items:flex-end;height:160px;padding-top:12px;"></div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+            <h3>Ingresos ultimos 7 dias</h3>
+            <div id="chartWeek" style="display:flex;gap:8px;align-items:flex-end;height:160px;padding-top:12px;"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════ PAGE: CONFIGURACION ═══════════ -->
+<div class="page" id="page-config">
+    <div class="section-wrap">
+        <div class="section-header"><h2>Configuraci&oacute;n</h2></div>
+
+        <div class="config-tabs">
+            <div class="config-tab active" onclick="switchConfigTab('cfg-canchas')">Canchas</div>
+            <div class="config-tab" onclick="switchConfigTab('cfg-precios')">Precios</div>
+            <div class="config-tab" onclick="switchConfigTab('cfg-horarios')">Horarios</div>
+            <div class="config-tab" onclick="switchConfigTab('cfg-promos')">Promociones</div>
+            <div class="config-tab" onclick="switchConfigTab('cfg-festivos')">Festivos</div>
+            <div class="config-tab" onclick="switchConfigTab('cfg-admins')">Administradores</div>
+        </div>
+
+        <!-- CANCHAS -->
+        <div class="config-panel active" id="cfg-canchas">
+            <div class="card">
+                <h3>Canchas del club</h3>
+                <div class="card-subtitle">Edita nombres, tipo y orden de las canchas</div>
+                <table class="tbl" id="cfgCourtsTable">
+                    <thead><tr><th>#</th><th>Nombre</th><th>Tipo</th><th>Patrocinador</th><th>Activa</th></tr></thead>
+                    <tbody id="cfgCourtsBody"></tbody>
+                </table>
+                <div style="margin-top:12px;"><button class="btn btn-outline btn-sm">+ Agregar cancha</button></div>
+            </div>
+        </div>
+
+        <!-- PRECIOS -->
+        <div class="config-panel" id="cfg-precios">
+            <div class="card">
+                <h3>Precios por tipo de cancha</h3>
+                <div class="card-subtitle">Configura precios normales y hora pico</div>
+                <table class="tbl">
+                    <thead><tr><th>Tipo</th><th>Precio normal</th><th>Precio pico</th><th>Hora pico inicio</th><th>Hora pico fin</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td>Abierta</td>
+                            <td><input type="number" value="350" style="width:80px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"> MXN</td>
+                            <td><input type="number" value="400" style="width:80px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"> MXN</td>
+                            <td><input type="time" value="18:00" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+                            <td><input type="time" value="22:00" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+                        </tr>
+                        <tr>
+                            <td>Techada</td>
+                            <td><input type="number" value="450" style="width:80px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"> MXN</td>
+                            <td><input type="number" value="500" style="width:80px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"> MXN</td>
+                            <td><input type="time" value="18:00" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+                            <td><input type="time" value="22:00" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div style="margin-top:12px;"><button class="btn btn-brand btn-sm">Guardar precios</button></div>
+            </div>
+        </div>
+
+        <!-- HORARIOS -->
+        <div class="config-panel" id="cfg-horarios">
+            <div class="card">
+                <h3>Horarios de operacion</h3>
+                <div class="card-subtitle">Configura apertura y cierre por dia</div>
+                <table class="tbl">
+                    <thead><tr><th>Dia</th><th>Apertura</th><th>Cierre</th><th>Duracion slot</th><th>Activo</th></tr></thead>
+                    <tbody id="cfgScheduleBody"></tbody>
+                </table>
+                <div style="margin-top:12px;"><button class="btn btn-brand btn-sm">Guardar horarios</button></div>
+            </div>
+        </div>
+
+        <!-- PROMOS -->
+        <div class="config-panel" id="cfg-promos">
+            <div class="card">
+                <h3>Promociones por tipo de cliente</h3>
+                <div class="card-subtitle">Descuentos automaticos segun categoria del cliente</div>
+                <table class="tbl">
+                    <thead><tr><th>Tipo de cliente</th><th>Descuento</th><th>Condicion</th><th>Activa</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td>Frecuente (10+ reservas/mes)</td>
+                            <td><input type="number" value="10" style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;">%</td>
+                            <td>Automatico al cumplir 10 reservas</td>
+                            <td><input type="checkbox" checked></td>
+                        </tr>
+                        <tr>
+                            <td>Miembro</td>
+                            <td><input type="number" value="15" style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;">%</td>
+                            <td>Asignacion manual</td>
+                            <td><input type="checkbox" checked></td>
+                        </tr>
+                        <tr>
+                            <td>Estudiante</td>
+                            <td><input type="number" value="20" style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;">%</td>
+                            <td>Horario matutino (7-14h)</td>
+                            <td><input type="checkbox"></td>
+                        </tr>
+                        <tr>
+                            <td>Hora muerta (baja demanda)</td>
+                            <td><input type="number" value="25" style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;">%</td>
+                            <td>Lun-Vie 7:00-16:00</td>
+                            <td><input type="checkbox" checked></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div style="margin-top:12px;display:flex;gap:8px;">
+                    <button class="btn btn-outline btn-sm">+ Nueva promo</button>
+                    <button class="btn btn-brand btn-sm">Guardar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- FESTIVOS -->
+        <div class="config-panel" id="cfg-festivos">
+            <div class="card">
+                <h3>Dias festivos / Cierre especial</h3>
+                <div class="card-subtitle">Bloquea canchas en dias festivos o mantenimiento</div>
+                <table class="tbl">
+                    <thead><tr><th>Fecha</th><th>Motivo</th><th>Canchas afectadas</th><th>Acciones</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td>2026-05-01</td>
+                            <td>Dia del Trabajo</td>
+                            <td>Todas</td>
+                            <td><button class="btn btn-outline btn-sm" style="color:var(--danger);">Eliminar</button></td>
+                        </tr>
+                        <tr>
+                            <td>2026-09-16</td>
+                            <td>Dia de Independencia</td>
+                            <td>Todas</td>
+                            <td><button class="btn btn-outline btn-sm" style="color:var(--danger);">Eliminar</button></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div style="margin-top:12px;">
+                    <button class="btn btn-outline btn-sm" onclick="addHoliday()">+ Agregar fecha</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ADMINS -->
+        <div class="config-panel" id="cfg-admins">
+            <div class="card">
+                <h3>Administradores</h3>
+                <div class="card-subtitle">Usuarios con acceso al panel</div>
+                <table class="tbl">
+                    <thead><tr><th>Nombre</th><th>Email</th><th>Rol</th><th>Status</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td>Alejandro Robledo</td>
+                            <td>ealejandro.robledo@gmail.com</td>
+                            <td><span class="pill pill-green">Super Admin</span></td>
+                            <td><span class="status-dot dot-green"></span>Activo</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div style="margin-top:12px;"><button class="btn btn-outline btn-sm">+ Agregar administrador</button></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+</div><!-- /main -->
+
+<!-- ═══════════ MODAL: NUEVA RESERVA ═══════════ -->
+<div class="modal-bg" id="bookingModal">
+    <div class="modal-box">
+        <div class="modal-head"><h3>Nueva reserva</h3><button class="modal-x" onclick="closeBookingModal()">&times;</button></div>
+        <div class="modal-body">
+            <div class="form-row">
+                <div class="form-group"><label>Cancha</label><select id="fmCourt"></select></div>
+                <div class="form-group"><label>Fecha</label><input type="date" id="fmDate"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Hora inicio</label><input type="time" id="fmStart" step="1800"></div>
+                <div class="form-group"><label>Hora fin</label><input type="time" id="fmEnd" step="1800"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Cliente</label><input type="text" id="fmName" placeholder="Nombre"></div>
+                <div class="form-group"><label>WhatsApp</label><input type="tel" id="fmPhone" placeholder="+52 ..."></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Tipo</label>
+                    <select id="fmType"><option value="regular">Regular</option><option value="campamento">Campamento</option><option value="torneo">Torneo</option><option value="clase">Clase</option></select>
+                </div>
+                <div class="form-group"><label>Notas</label><input type="text" id="fmNotes" placeholder="Opcional"></div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-outline" onclick="closeBookingModal()">Cancelar</button>
+            <button class="btn btn-brand" onclick="submitBooking()">Crear reserva</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════ MODAL: PATROCINIO ═══════════ -->
+<div class="modal-bg" id="sponsorModal">
+    <div class="modal-box">
+        <div class="modal-head"><h3>Nuevo patrocinio</h3><button class="modal-x" onclick="closeSponsorModal()">&times;</button></div>
+        <div class="modal-body">
+            <div class="form-group"><label>Cancha</label><select id="spCourt"></select></div>
+            <div class="form-group"><label>Empresa / Patrocinador</label><input type="text" id="spCompany" placeholder="Ej: Aceromax"></div>
+            <div class="form-group"><label>Contacto</label><input type="text" id="spContact" placeholder="Nombre y telefono"></div>
+            <div class="form-row">
+                <div class="form-group"><label>Monto mensual (MXN)</label><input type="number" id="spAmount" placeholder="5000"></div>
+                <div class="form-group"><label>Vigencia hasta</label><input type="date" id="spEndDate"></div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-outline" onclick="closeSponsorModal()">Cancelar</button>
+            <button class="btn btn-brand" onclick="saveSponsor()">Guardar</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ═══ DATA ═══
+const COURTS = [
+    { id:1, name:'Cancha 1 - Kia CLEBER', short:'Cancha 1', type:'open', sponsor:'Kia CLEBER', active:true },
+    { id:2, name:'Cancha 2 - GMC', short:'Cancha 2', type:'open', sponsor:'GMC', active:true },
+    { id:3, name:'Cancha Techada 3 - Honda Plaza', short:'Cancha 3', type:'covered', sponsor:'Honda Plaza', active:true },
+    { id:4, name:'Cancha Techada 4 - Aceromax', short:'Cancha 4', type:'covered', sponsor:'Aceromax', active:true },
+    { id:5, name:'Cancha Techada 5 - Hospital Providencial', short:'Cancha 5', type:'covered', sponsor:'Hospital Providencial', active:true },
+    { id:6, name:'Cancha Techada 6 - MG Motor', short:'Cancha 6', type:'covered', sponsor:'MG Motor', active:true },
+];
+
+let bookings = [
+    { id:1, court_id:4, customer_name:'Campamento', start_time:'09:00', end_time:'13:00', status:'confirmed', payment_status:'unpaid', booking_type:'campamento', amount_cents:0 },
+    { id:2, court_id:5, customer_name:'Campamento', start_time:'09:00', end_time:'13:00', status:'confirmed', payment_status:'unpaid', booking_type:'campamento', amount_cents:0 },
+    { id:3, court_id:6, customer_name:'Caro Garcia', start_time:'10:00', end_time:'11:30', status:'pending', payment_status:'unpaid', booking_type:'regular', amount_cents:45000 },
+    { id:4, court_id:1, customer_name:'Roberto Hdz', start_time:'18:00', end_time:'19:30', status:'confirmed', payment_status:'paid', booking_type:'regular', amount_cents:35000 },
+    { id:5, court_id:3, customer_name:'Liga Mixta', start_time:'20:00', end_time:'22:00', status:'confirmed', payment_status:'paid', booking_type:'torneo', amount_cents:45000 },
+    { id:6, court_id:2, customer_name:'Fam. Martinez', start_time:'17:00', end_time:'18:30', status:'confirmed', payment_status:'paid', booking_type:'regular', amount_cents:35000 },
+];
+
+const clients = [
+    { name:'Caro Garcia', phone:'+52 834 123 4567', bookings:12, spent:540000, last:'2026-04-09', wallet:150000 },
+    { name:'Roberto Hdz', phone:'+52 834 234 5678', bookings:28, spent:980000, last:'2026-04-09', wallet:0 },
+    { name:'Fam. Martinez', phone:'+52 834 345 6789', bookings:8, spent:280000, last:'2026-04-09', wallet:90000 },
+    { name:'Ana Luisa Perez', phone:'+52 834 456 7890', bookings:15, spent:675000, last:'2026-04-08', wallet:200000 },
+    { name:'Carlos Trevino', phone:'+52 834 567 8901', bookings:22, spent:770000, last:'2026-04-07', wallet:0 },
+    { name:'Diego Salinas', phone:'+52 834 678 9012', bookings:5, spent:175000, last:'2026-04-06', wallet:45000 },
+    { name:'Maria Elena Garza', phone:'+52 834 789 0123', bookings:33, spent:1155000, last:'2026-04-09', wallet:300000 },
+    { name:'Paco Lozano', phone:'+52 834 890 1234', bookings:3, spent:135000, last:'2026-04-05', wallet:0 },
+];
+
+const sponsors = [
+    { court_id:1, company:'Kia CLEBER', contact:'Lic. Garza - 834 111 2222', amount:5000, end:'2026-12-31', paid:true },
+    { court_id:2, company:'GMC', contact:'Ing. Salinas - 834 222 3333', amount:5000, end:'2026-12-31', paid:true },
+    { court_id:3, company:'Honda Plaza', contact:'Sr. Ramirez - 834 333 4444', amount:7000, end:'2026-06-30', paid:true },
+    { court_id:4, company:'Aceromax', contact:'Lic. Trevino - 834 444 5555', amount:7000, end:'2026-12-31', paid:false },
+    { court_id:5, company:'Hospital Providencial', contact:'Dr. Lopez - 834 555 6666', amount:8000, end:'2027-03-31', paid:true },
+    { court_id:6, company:'MG Motor', contact:'Ing. Cantu - 834 666 7777', amount:6000, end:'2026-09-30', paid:false },
+];
+
+const DAYS = ['Dom','Lun','Mar','Mie','Jue','Vie','Sab'];
+const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const FULL_DAYS = ['Lunes','Martes','Miercoles','Jueves','Viernes','Sabado','Domingo'];
+let currentDate = new Date();
+
+// ═══ NAVIGATION ═══
+function switchPage(page) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-'+page).classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    event.currentTarget.classList.add('active');
+
+    const titles = { calendario:'Calendario', clientes:'Clientes', monederos:'Monederos', patrocinios:'Patrocinios', reportes:'Reportes', config:'Configuracion' };
+    document.getElementById('pageTitle').textContent = titles[page] || page;
+    document.getElementById('dateNav').style.display = page === 'calendario' ? 'flex' : 'none';
+    document.getElementById('statBookings').style.display = page === 'calendario' ? 'inline-flex' : 'none';
+    document.getElementById('statRevenue').style.display = page === 'calendario' ? 'inline-flex' : 'none';
+
+    if (page === 'clientes') renderClients();
+    if (page === 'monederos') renderWallets();
+    if (page === 'patrocinios') renderSponsors();
+    if (page === 'reportes') renderReports();
+    if (page === 'config') renderConfig();
+}
+
+// ═══ CALENDAR ═══
+function timeSlots() {
+    const s = [];
+    for (let h=7; h<=22; h++) { s.push(`${String(h).padStart(2,'0')}:00`); if(h<22) s.push(`${String(h).padStart(2,'0')}:30`); }
+    return s;
+}
+
+function renderCalendar() {
+    const grid = document.getElementById('calGrid');
+    const slots = timeSlots();
+    const cols = `72px repeat(${COURTS.length}, 1fr)`;
+
+    let html = `<div class="cal-header" style="display:grid;grid-template-columns:${cols}">`;
+    html += `<div class="cal-header-cell"></div>`;
+    for (const c of COURTS) {
+        html += `<div class="cal-header-cell">${c.name}<div class="ch-type">${c.type==='covered'?'Techada':'Abierta'}</div></div>`;
+    }
+    html += `</div>`;
+
+    const rendered = new Set();
+
+    for (const slot of slots) {
+        html += `<div class="cal-row" style="display:grid;grid-template-columns:${cols}">`;
+        const hr = parseInt(slot); const ampm = hr>=12?'PM':'AM'; const h12 = hr===0?12:(hr>12?hr-12:hr);
+        html += `<div class="cal-time">${String(h12).padStart(2,'0')}:${slot.slice(3)} ${ampm}</div>`;
+
+        for (const c of COURTS) {
+            const bk = bookings.find(b => b.court_id===c.id && slot>=b.start_time && slot<b.end_time);
+            if (bk) {
+                const key = `${bk.id}-${c.id}`;
+                if (rendered.has(key)) {
+                    html += `<div class="cal-cell" style="padding:0;pointer-events:none;"></div>`;
+                } else {
+                    rendered.add(key);
+                    const spans = countSpans(bk, slots);
+                    const cls = bk.booking_type==='campamento'?'bk-campamento': bk.booking_type==='torneo'?'bk-torneo': bk.status==='confirmed'?'bk-confirmed':'bk-pending';
+                    const badge = bk.payment_status==='paid'?'badge-paid':'badge-unpaid';
+                    const badgeTxt = bk.payment_status==='paid'?'Pagado':'Sin pagar';
+                    html += `<div class="cal-cell">
+                        <div class="bk ${cls}" style="min-height:${spans*54-6}px" onclick="alert('Reserva #${bk.id}: ${bk.customer_name}\\n${bk.start_time} - ${bk.end_time}\\nStatus: ${bk.status}\\nPago: ${bk.payment_status}')">
+                            <span class="bk-badge ${badge}">${badgeTxt}</span>
+                            <div class="bk-name">${bk.customer_name}</div>
+                            <div class="bk-time">${bk.start_time} - ${bk.end_time}</div>
+                        </div>
+                    </div>`;
+                }
+            } else {
+                html += `<div class="cal-cell" onclick="openNewBooking(${c.id},'${slot}')"></div>`;
+            }
+        }
+        html += `</div>`;
+    }
+    grid.innerHTML = html;
+    updateDateDisplay();
+    updateStats();
+}
+
+function countSpans(bk, slots) {
+    const si = slots.indexOf(bk.start_time);
+    let ei = slots.findIndex(t => t >= bk.end_time);
+    if (ei===-1) ei = slots.length;
+    return Math.max(1, ei - si);
+}
+
+function updateDateDisplay() {
+    const d = currentDate;
+    document.getElementById('dateDisplay').textContent = `${DAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function updateStats() {
+    const active = bookings.filter(b=>b.status!=='cancelled');
+    const rev = active.filter(b=>b.payment_status==='paid').reduce((s,b)=>s+(b.amount_cents||0),0);
+    document.getElementById('statBookings').textContent = `${active.length} reservas`;
+    document.getElementById('statRevenue').textContent = `$${(rev/100).toLocaleString('es-MX')} MXN`;
+}
+
+function goToday() { currentDate=new Date(); renderCalendar(); }
+function changeDate(d) { currentDate.setDate(currentDate.getDate()+d); renderCalendar(); }
+
+// ═══ NEW BOOKING MODAL ═══
+function openNewBooking(courtId, time) {
+    document.getElementById('fmDate').value = currentDate.toISOString().split('T')[0];
+    document.getElementById('fmStart').value = time;
+    const [h,m] = time.split(':').map(Number);
+    const end = h*60+m+90;
+    document.getElementById('fmEnd').value = `${String(Math.floor(end/60)).padStart(2,'0')}:${String(end%60).padStart(2,'0')}`;
+    const sel = document.getElementById('fmCourt');
+    sel.innerHTML = COURTS.map(c=>`<option value="${c.id}" ${c.id===courtId?'selected':''}>${c.name}</option>`).join('');
+    document.getElementById('bookingModal').classList.add('open');
+}
+function closeBookingModal() { document.getElementById('bookingModal').classList.remove('open'); }
+
+function submitBooking() {
+    const nb = {
+        id: bookings.length+100,
+        court_id: parseInt(document.getElementById('fmCourt').value),
+        customer_name: document.getElementById('fmName').value || 'Nueva reserva',
+        start_time: document.getElementById('fmStart').value,
+        end_time: document.getElementById('fmEnd').value,
+        status: 'pending',
+        payment_status: 'unpaid',
+        booking_type: document.getElementById('fmType').value,
+        amount_cents: 45000,
+    };
+    bookings.push(nb);
+    closeBookingModal();
+    renderCalendar();
+}
+
+// ═══ CLIENTS ═══
+function renderClients() {
+    const body = document.getElementById('clientsBody');
+    body.innerHTML = clients.map(c => `<tr>
+        <td><strong>${c.name}</strong></td>
+        <td>${c.phone}</td>
+        <td>${c.bookings}</td>
+        <td>$${(c.spent/100).toLocaleString('es-MX')}</td>
+        <td>${c.last}</td>
+        <td>${c.wallet>0? '$'+(c.wallet/100).toLocaleString('es-MX') : '<span style="color:var(--text-muted)">—</span>'}</td>
+    </tr>`).join('');
+}
+function filterClients() {
+    const q = document.getElementById('clientSearch').value.toLowerCase();
+    const rows = document.querySelectorAll('#clientsBody tr');
+    rows.forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+}
+
+// ═══ WALLETS ═══
+function renderWallets() {
+    const withWallet = clients.filter(c=>c.wallet>0);
+    const total = withWallet.reduce((s,c)=>s+c.wallet,0);
+    document.getElementById('walletTotal').textContent = '$'+(total/100).toLocaleString('es-MX');
+    document.getElementById('walletClients').textContent = withWallet.length;
+
+    document.getElementById('walletsBody').innerHTML = withWallet.map(c => `<tr>
+        <td><strong>${c.name}</strong></td>
+        <td>${c.phone}</td>
+        <td><strong style="color:var(--brand)">$${(c.wallet/100).toLocaleString('es-MX')}</strong></td>
+        <td>2026-04-05</td>
+        <td><button class="btn btn-outline btn-sm">+ Recargar</button> <button class="btn btn-outline btn-sm">Historial</button></td>
+    </tr>`).join('');
+}
+function openWalletModal() { alert('Modal de recarga — conectar con backend'); }
+
+// ═══ SPONSORS ═══
+function renderSponsors() {
+    document.getElementById('sponsorsBody').innerHTML = sponsors.map(s => {
+        const court = COURTS.find(c=>c.id===s.court_id);
+        const statusCls = s.paid ? 'dot-green' : 'dot-red';
+        const statusTxt = s.paid ? 'Al corriente' : 'Pendiente';
+        return `<tr>
+            <td>${court?court.name:'-'}</td>
+            <td><strong>${s.company}</strong></td>
+            <td>${s.contact}</td>
+            <td>$${s.amount.toLocaleString('es-MX')} MXN</td>
+            <td>${s.end}</td>
+            <td><span class="status-dot ${statusCls}"></span>${statusTxt}</td>
+            <td>
+                <button class="btn btn-sm ${s.paid?'btn-outline':'btn-brand'}" onclick="togglePaid(${s.court_id})">${s.paid?'Marcar pendiente':'Marcar pagado'}</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+function togglePaid(courtId) {
+    const s = sponsors.find(x=>x.court_id===courtId);
+    if(s) { s.paid=!s.paid; renderSponsors(); }
+}
+function openSponsorModal() {
+    const sel = document.getElementById('spCourt');
+    sel.innerHTML = COURTS.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+    document.getElementById('sponsorModal').classList.add('open');
+}
+function closeSponsorModal() { document.getElementById('sponsorModal').classList.remove('open'); }
+function saveSponsor() { closeSponsorModal(); alert('Patrocinio guardado (conectar backend)'); }
+
+// ═══ REPORTS ═══
+function renderReports() {
+    const active = bookings.filter(b=>b.status!=='cancelled');
+    document.getElementById('rptToday').textContent = active.length;
+    const rev = active.filter(b=>b.payment_status==='paid').reduce((s,b)=>s+(b.amount_cents||0),0);
+    document.getElementById('rptRevenue').textContent = '$'+(rev/100).toLocaleString('es-MX');
+
+    // Chart by court
+    const chart = document.getElementById('chartByCourt');
+    chart.innerHTML = COURTS.map(c => {
+        const cnt = active.filter(b=>b.court_id===c.id).length;
+        const pct = cnt * 30;
+        return `<div style="flex:1;text-align:center;">
+            <div style="background:var(--brand-light);border-radius:6px 6px 0 0;height:${pct||4}px;margin:0 4px;transition:height 0.3s;"></div>
+            <div style="background:var(--brand);border-radius:0 0 6px 6px;height:4px;margin:0 4px;"></div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:6px;">${c.short}</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">${cnt}</div>
+        </div>`;
+    }).join('');
+
+    // Week chart
+    const weekChart = document.getElementById('chartWeek');
+    const weekData = [1850,2400,1200,2150,0,0,0];
+    const maxW = Math.max(...weekData,1);
+    weekChart.innerHTML = weekData.map((v,i) => {
+        const pct = (v/maxW)*140;
+        const d = new Date(); d.setDate(d.getDate()-6+i);
+        return `<div style="flex:1;text-align:center;">
+            <div style="background:${i<5?'var(--brand-light)':'var(--border-light)'};border-radius:6px 6px 0 0;height:${pct||4}px;margin:0 4px;"></div>
+            <div style="background:${i<5?'var(--brand)':'var(--border)'};border-radius:0 0 6px 6px;height:4px;margin:0 4px;"></div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:6px;">${DAYS[d.getDay()]}</div>
+            <div style="font-size:12px;font-weight:600;color:var(--text);">$${v>0?v.toLocaleString('es-MX'):'-'}</div>
+        </div>`;
+    }).join('');
+}
+
+// ═══ CONFIG ═══
+function switchConfigTab(id) {
+    document.querySelectorAll('.config-tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.config-panel').forEach(p=>p.classList.remove('active'));
+    event.currentTarget.classList.add('active');
+    document.getElementById(id).classList.add('active');
+}
+
+function renderConfig() {
+    // Courts table
+    document.getElementById('cfgCourtsBody').innerHTML = COURTS.map((c,i) => `<tr>
+        <td>${i+1}</td>
+        <td><input type="text" value="${c.name}" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;width:100%;"></td>
+        <td><select style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;">
+            <option ${c.type==='open'?'selected':''}>Abierta</option>
+            <option ${c.type==='covered'?'selected':''}>Techada</option>
+        </select></td>
+        <td><input type="text" value="${c.sponsor||''}" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;width:100%;"></td>
+        <td><input type="checkbox" ${c.active?'checked':''}></td>
+    </tr>`).join('');
+
+    // Schedule table
+    document.getElementById('cfgScheduleBody').innerHTML = FULL_DAYS.map(d => `<tr>
+        <td>${d}</td>
+        <td><input type="time" value="07:00" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+        <td><input type="time" value="22:00" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+        <td><select style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;">
+            <option>90 min</option><option>60 min</option><option>120 min</option>
+        </select></td>
+        <td><input type="checkbox" checked></td>
+    </tr>`).join('');
+}
+
+function addHoliday() { alert('Agregar festivo — conectar con backend'); }
+
+// ═══ INIT ═══
+renderCalendar();
+</script>
+</body>
+</html>
