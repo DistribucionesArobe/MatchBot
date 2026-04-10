@@ -51,7 +51,11 @@ MSG_DEDUP_WINDOW = 120  # seconds
 
 @app.on_event("startup")
 async def startup():
-    init_db()
+    try:
+        init_db()
+        logger.info("🎾 MatchBot started — DB connected")
+    except Exception as e:
+        logger.warning(f"⚠️ DB not available: {e} — running without database")
     logger.info("🎾 MatchBot started — matchbot.live")
 
 
