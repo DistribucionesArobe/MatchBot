@@ -626,37 +626,71 @@
 </div>
 
 <script>
-// ═══ DATA ═══
-const COURTS = [
-    { id:1, name:'Cancha 1 - Kia CLEBER', short:'Cancha 1', type:'open', sponsor:'Kia CLEBER', active:true },
-    { id:2, name:'Cancha 2 - GMC', short:'Cancha 2', type:'open', sponsor:'GMC', active:true },
-    { id:3, name:'Cancha Techada 3 - Honda Plaza', short:'Cancha 3', type:'covered', sponsor:'Honda Plaza', active:true },
-    { id:4, name:'Cancha Techada 4 - Aceromax', short:'Cancha 4', type:'covered', sponsor:'Aceromax', active:true },
-    { id:5, name:'Cancha Techada 5 - Hospital Providencial', short:'Cancha 5', type:'covered', sponsor:'Hospital Providencial', active:true },
-    { id:6, name:'Cancha Techada 6 - MG Motor', short:'Cancha 6', type:'covered', sponsor:'MG Motor', active:true },
-];
+// ═══ CONFIG ═══
+const API = 'https://matchbot-ieb5.onrender.com';
+const CLUB_ID = 1;
 
-let bookings = [
-    { id:1, court_id:4, customer_name:'Campamento', start_time:'09:00', end_time:'13:00', status:'confirmed', payment_status:'unpaid', booking_type:'campamento', amount_cents:0 },
-    { id:2, court_id:5, customer_name:'Campamento', start_time:'09:00', end_time:'13:00', status:'confirmed', payment_status:'unpaid', booking_type:'campamento', amount_cents:0 },
-    { id:3, court_id:6, customer_name:'Caro Garcia', start_time:'10:00', end_time:'11:30', status:'pending', payment_status:'unpaid', booking_type:'regular', amount_cents:45000 },
-    { id:4, court_id:1, customer_name:'Roberto Hdz', start_time:'18:00', end_time:'19:30', status:'confirmed', payment_status:'paid', booking_type:'regular', amount_cents:35000 },
-    { id:5, court_id:3, customer_name:'Liga Mixta', start_time:'20:00', end_time:'22:00', status:'confirmed', payment_status:'paid', booking_type:'torneo', amount_cents:45000 },
-    { id:6, court_id:2, customer_name:'Fam. Martinez', start_time:'17:00', end_time:'18:30', status:'confirmed', payment_status:'paid', booking_type:'regular', amount_cents:35000 },
-];
+// ═══ DATA (loaded from API) ═══
+let COURTS = [];
+let bookings = [];
+let clients = [];
+let sponsors = [];
 
-const clients = [
-    { name:'Caro Garcia', phone:'+52 834 123 4567', bookings:12, spent:540000, last:'2026-04-09', wallet:150000 },
-    { name:'Roberto Hdz', phone:'+52 834 234 5678', bookings:28, spent:980000, last:'2026-04-09', wallet:0 },
-    { name:'Fam. Martinez', phone:'+52 834 345 6789', bookings:8, spent:280000, last:'2026-04-09', wallet:90000 },
-    { name:'Ana Luisa Perez', phone:'+52 834 456 7890', bookings:15, spent:675000, last:'2026-04-08', wallet:200000 },
-    { name:'Carlos Trevino', phone:'+52 834 567 8901', bookings:22, spent:770000, last:'2026-04-07', wallet:0 },
-    { name:'Diego Salinas', phone:'+52 834 678 9012', bookings:5, spent:175000, last:'2026-04-06', wallet:45000 },
-    { name:'Maria Elena Garza', phone:'+52 834 789 0123', bookings:33, spent:1155000, last:'2026-04-09', wallet:300000 },
-    { name:'Paco Lozano', phone:'+52 834 890 1234', bookings:3, spent:135000, last:'2026-04-05', wallet:0 },
-];
+// ═══ API HELPERS ═══
+async function api(path) {
+    try {
+        const r = await fetch(`${API}${path}`);
+        if (!r.ok) throw new Error(r.status);
+        return await r.json();
+    } catch(e) {
+        console.warn('API error:', path, e);
+        return null;
+    }
+}
 
-const sponsors = [
+async function loadCourts() {
+    const data = await api(`/api/clubs/${CLUB_ID}/courts`);
+    if (data) {
+        COURTS = data.map(c => ({
+            id: c.id, name: c.name, short: c.short_name,
+            type: c.court_type, sponsor: c.sponsor, active: c.active
+        }));
+    }
+    if (!COURTS.length) {
+        // Fallback demo data if API unavailable
+        COURTS = [
+            { id:1, name:'Cancha 1 - Kia CLEBER', short:'Cancha 1', type:'open', sponsor:'Kia CLEBER', active:true },
+            { id:2, name:'Cancha 2 - GMC', short:'Cancha 2', type:'open', sponsor:'GMC', active:true },
+            { id:3, name:'Cancha Techada 3 - Honda Plaza', short:'Cancha 3', type:'covered', sponsor:'Honda Plaza', active:true },
+            { id:4, name:'Cancha Techada 4 - Aceromax', short:'Cancha 4', type:'covered', sponsor:'Aceromax', active:true },
+            { id:5, name:'Cancha Techada 5 - Hospital Providencial', short:'Cancha 5', type:'covered', sponsor:'Hospital Providencial', active:true },
+            { id:6, name:'Cancha Techada 6 - MG Motor', short:'Cancha 6', type:'covered', sponsor:'MG Motor', active:true },
+        ];
+    }
+}
+
+async function loadBookings() {
+    const dateStr = currentDate.toISOString().split('T')[0];
+    const data = await api(`/api/clubs/${CLUB_ID}/bookings?date=${dateStr}`);
+    if (data) {
+        bookings = data;
+    }
+}
+
+async function loadClients() {
+    const data = await api(`/api/clubs/${CLUB_ID}/customers`);
+    if (data) {
+        clients = data.map(c => ({
+            name: c.name || 'Sin nombre', phone: c.phone,
+            bookings: c.total_bookings, spent: c.total_spent,
+            last: c.last_booking ? c.last_booking.split('T')[0] : '-',
+            wallet: c.wallet_balance || 0
+        }));
+    }
+}
+
+// Sponsors still local until API endpoint is added
+const defaultSponsors = [
     { court_id:1, company:'Kia CLEBER', contact:'Lic. Garza - 834 111 2222', amount:5000, end:'2026-12-31', paid:true },
     { court_id:2, company:'GMC', contact:'Ing. Salinas - 834 222 3333', amount:5000, end:'2026-12-31', paid:true },
     { court_id:3, company:'Honda Plaza', contact:'Sr. Ramirez - 834 333 4444', amount:7000, end:'2026-06-30', paid:true },
@@ -664,6 +698,7 @@ const sponsors = [
     { court_id:5, company:'Hospital Providencial', contact:'Dr. Lopez - 834 555 6666', amount:8000, end:'2027-03-31', paid:true },
     { court_id:6, company:'MG Motor', contact:'Ing. Cantu - 834 666 7777', amount:6000, end:'2026-09-30', paid:false },
 ];
+sponsors = [...defaultSponsors];
 
 const DAYS = ['Dom','Lun','Mar','Mie','Jue','Vie','Sab'];
 const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
@@ -683,8 +718,8 @@ function switchPage(page) {
     document.getElementById('statBookings').style.display = page === 'calendario' ? 'inline-flex' : 'none';
     document.getElementById('statRevenue').style.display = page === 'calendario' ? 'inline-flex' : 'none';
 
-    if (page === 'clientes') renderClients();
-    if (page === 'monederos') renderWallets();
+    if (page === 'clientes') { loadClients().then(renderClients); }
+    if (page === 'monederos') { loadClients().then(renderWallets); }
     if (page === 'patrocinios') renderSponsors();
     if (page === 'reportes') renderReports();
     if (page === 'config') renderConfig();
@@ -766,8 +801,8 @@ function updateStats() {
     document.getElementById('statRevenue').textContent = `$${(rev/100).toLocaleString('es-MX')} MXN`;
 }
 
-function goToday() { currentDate=new Date(); renderCalendar(); }
-function changeDate(d) { currentDate.setDate(currentDate.getDate()+d); renderCalendar(); }
+async function goToday() { currentDate=new Date(); await loadBookings(); renderCalendar(); }
+async function changeDate(d) { currentDate.setDate(currentDate.getDate()+d); await loadBookings(); renderCalendar(); }
 
 // ═══ NEW BOOKING MODAL ═══
 function openNewBooking(courtId, time) {
@@ -782,20 +817,34 @@ function openNewBooking(courtId, time) {
 }
 function closeBookingModal() { document.getElementById('bookingModal').classList.remove('open'); }
 
-function submitBooking() {
-    const nb = {
-        id: bookings.length+100,
+async function submitBooking() {
+    const data = {
         court_id: parseInt(document.getElementById('fmCourt').value),
-        customer_name: document.getElementById('fmName').value || 'Nueva reserva',
+        booking_date: document.getElementById('fmDate').value,
         start_time: document.getElementById('fmStart').value,
         end_time: document.getElementById('fmEnd').value,
-        status: 'pending',
-        payment_status: 'unpaid',
+        customer_name: document.getElementById('fmName').value || 'Nueva reserva',
+        wa_phone: document.getElementById('fmPhone').value || 'admin',
         booking_type: document.getElementById('fmType').value,
-        amount_cents: 45000,
+        notes: document.getElementById('fmNotes').value,
     };
-    bookings.push(nb);
+    try {
+        const r = await fetch(`${API}/api/clubs/${CLUB_ID}/bookings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!r.ok) {
+            const err = await r.json();
+            alert(err.detail || 'Error al crear reserva');
+            return;
+        }
+    } catch(e) {
+        // Fallback local
+        bookings.push({ id: bookings.length+100, ...data, court_id: data.court_id, status:'pending', payment_status:'unpaid', amount_cents:45000 });
+    }
     closeBookingModal();
+    await loadBookings();
     renderCalendar();
 }
 
@@ -937,7 +986,11 @@ function renderConfig() {
 function addHoliday() { alert('Agregar festivo — conectar con backend'); }
 
 // ═══ INIT ═══
-renderCalendar();
+(async function init() {
+    await loadCourts();
+    await loadBookings();
+    renderCalendar();
+})();
 </script>
 </body>
 </html>
