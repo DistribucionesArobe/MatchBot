@@ -5,5 +5,3 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
-node_modules/
-.vercel
