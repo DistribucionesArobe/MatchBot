@@ -65,7 +65,27 @@ CREATE TABLE IF NOT EXISTS court_schedules (
 CREATE INDEX idx_schedules_court ON court_schedules(court_id);
 
 -- ============================================================
--- 4. BOOKINGS (reservas)
+-- 4. CUSTOMERS (clientes) — before bookings because bookings references customers
+-- ============================================================
+CREATE TABLE IF NOT EXISTS customers (
+    id              SERIAL PRIMARY KEY,
+    club_id         INTEGER NOT NULL REFERENCES clubs(id),
+    name            VARCHAR(200),
+    phone           VARCHAR(20) NOT NULL,
+    email           VARCHAR(200),
+    notes           TEXT,
+    total_bookings  INTEGER DEFAULT 0,
+    total_spent     INTEGER DEFAULT 0,
+    last_booking    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(club_id, phone)
+);
+
+CREATE INDEX idx_customers_club ON customers(club_id);
+CREATE INDEX idx_customers_phone ON customers(phone);
+
+-- ============================================================
+-- 5. BOOKINGS (reservas)
 -- ============================================================
 CREATE TYPE booking_status AS ENUM (
     'pending',      -- esperando pago
@@ -111,26 +131,6 @@ CREATE INDEX idx_bookings_status ON bookings(status);
 -- Prevent overlapping bookings on same court
 CREATE UNIQUE INDEX idx_no_overlap ON bookings(court_id, booking_date, start_time)
     WHERE status NOT IN ('cancelled');
-
--- ============================================================
--- 5. CUSTOMERS (clientes)
--- ============================================================
-CREATE TABLE IF NOT EXISTS customers (
-    id              SERIAL PRIMARY KEY,
-    club_id         INTEGER NOT NULL REFERENCES clubs(id),
-    name            VARCHAR(200),
-    phone           VARCHAR(20) NOT NULL,                 -- WhatsApp phone (unique per club)
-    email           VARCHAR(200),
-    notes           TEXT,
-    total_bookings  INTEGER DEFAULT 0,
-    total_spent     INTEGER DEFAULT 0,                    -- centavos
-    last_booking    TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(club_id, phone)
-);
-
-CREATE INDEX idx_customers_club ON customers(club_id);
-CREATE INDEX idx_customers_phone ON customers(phone);
 
 -- ============================================================
 -- 6. BOOKING STATE (estado de conversación WhatsApp)
