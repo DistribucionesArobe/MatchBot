@@ -258,9 +258,13 @@
 <aside class="sidebar">
     <div class="sidebar-brand">
         <div class="brand-dot">M</div>
-        <div>
+        <div style="flex:1;min-width:0;">
             <div class="brand-text">MatchBot</div>
-            <div class="brand-sub">Club de Padel Victoria</div>
+            <select id="clubSelector" onchange="switchClub(this.value)"
+                style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:11px;padding:2px 6px;border-radius:6px;margin-top:4px;cursor:pointer;max-width:100%;">
+                <option value="1">Club de Padel Victoria</option>
+                <option value="2">Salón Multiusos Victoria</option>
+            </select>
         </div>
     </div>
     <nav class="sidebar-nav">
@@ -424,7 +428,32 @@
             <div class="config-tab" onclick="switchConfigTab('cfg-horarios')">Horarios</div>
             <div class="config-tab" onclick="switchConfigTab('cfg-promos')">Promociones</div>
             <div class="config-tab" onclick="switchConfigTab('cfg-festivos')">Festivos</div>
+            <div class="config-tab" onclick="switchConfigTab('cfg-paquetes')">Paquetes</div>
             <div class="config-tab" onclick="switchConfigTab('cfg-admins')">Administradores</div>
+        </div>
+
+        <!-- PAQUETES -->
+        <div class="config-panel" id="cfg-paquetes">
+            <div class="card">
+                <h3>Paquetes de horas</h3>
+                <div class="card-subtitle" id="pkgSubtitle">Paquetes prepagados para el cliente. Visible principalmente para el Salón.</div>
+                <table class="tbl">
+                    <thead><tr><th>Nombre</th><th>Horas</th><th>Precio</th><th>Precio / hora</th><th>Vigencia (días)</th><th>Activo</th></tr></thead>
+                    <tbody id="cfgPackagesBody"></tbody>
+                </table>
+                <div style="margin-top:12px;"><button class="btn btn-outline btn-sm" onclick="addPackage()">+ Agregar paquete</button></div>
+            </div>
+            <div class="card" style="margin-top:16px;">
+                <h3>Paquetes activos de clientes</h3>
+                <div class="card-subtitle">Clientes que tienen paquete comprado y horas disponibles</div>
+                <table class="tbl">
+                    <thead><tr><th>Cliente</th><th>Paquete</th><th>Horas restantes</th><th>Expira</th><th>Acciones</th></tr></thead>
+                    <tbody id="cfgCustomerPackagesBody">
+                        <tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px;">Sin paquetes activos todavía</td></tr>
+                    </tbody>
+                </table>
+                <div style="margin-top:12px;"><button class="btn btn-brand btn-sm" onclick="sellPackage()">+ Vender paquete a cliente</button></div>
+            </div>
         </div>
 
         <!-- CANCHAS -->
@@ -628,7 +657,19 @@
 <script>
 // ═══ CONFIG ═══
 const API = 'https://matchbot-ieb5.onrender.com';
-const CLUB_ID = 1;
+let CLUB_ID = parseInt(localStorage.getItem('mb_club_id') || '1');
+
+async function switchClub(id) {
+    CLUB_ID = parseInt(id);
+    localStorage.setItem('mb_club_id', id);
+    COURTS = []; bookings = []; clients = [];
+    await loadCourts();
+    await loadBookings();
+    await loadClients();
+    renderCalendar();
+    renderClients && renderClients();
+    renderPackages && renderPackages();
+}
 
 // ═══ DATA (loaded from API) ═══
 let COURTS = [];
@@ -985,11 +1026,45 @@ function renderConfig() {
 
 function addHoliday() { alert('Agregar festivo — conectar con backend'); }
 
+// ═══ PACKAGES (Salón) ═══
+const DEFAULT_PACKAGES = {
+    1: [],  // Padel no tiene paquetes por default
+    2: [
+        { name:'Paquete 5 horas',  hours:5,  price:900,  validity:60,  active:true },
+        { name:'Paquete 10 horas', hours:10, price:1700, validity:90,  active:true },
+        { name:'Paquete 20 horas', hours:20, price:3200, validity:120, active:true },
+    ]
+};
+function renderPackages() {
+    const body = document.getElementById('cfgPackagesBody');
+    if (!body) return;
+    const pkgs = DEFAULT_PACKAGES[CLUB_ID] || [];
+    if (!pkgs.length) {
+        body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px;">Este club no usa paquetes. Cambia al Salón Multiusos para configurar paquetes.</td></tr>';
+        return;
+    }
+    body.innerHTML = pkgs.map(p => `
+        <tr>
+            <td><input type="text" value="${p.name}" style="width:180px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+            <td><input type="number" value="${p.hours}" style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"></td>
+            <td><input type="number" value="${p.price}" style="width:80px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"> MXN</td>
+            <td style="color:var(--text-secondary);">$${(p.price/p.hours).toFixed(0)}/h</td>
+            <td><input type="number" value="${p.validity}" style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;"> días</td>
+            <td><input type="checkbox" ${p.active ? 'checked' : ''}></td>
+        </tr>
+    `).join('');
+}
+function addPackage() { alert('Agregar paquete — se guardará en la BD al conectar el endpoint'); }
+function sellPackage() { alert('Vender paquete a cliente — próximamente con búsqueda por teléfono'); }
+
 // ═══ INIT ═══
 (async function init() {
+    const sel = document.getElementById('clubSelector');
+    if (sel) sel.value = CLUB_ID;
     await loadCourts();
     await loadBookings();
     renderCalendar();
+    renderPackages();
 })();
 </script>
 </body>
