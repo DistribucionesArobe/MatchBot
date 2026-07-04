@@ -14,7 +14,7 @@ class Settings:
     # -- WhatsApp (Meta Cloud API) --
     WA_VERIFY_TOKEN: str = os.getenv("WA_VERIFY_TOKEN", "matchbot-verify-token")
     # Per-club tokens are stored in the clubs table, but we can have a default
-    WA_API_VERSION: str = "v21.0"
+    WA_API_VERSION: str = os.getenv("WA_API_VERSION", "v25.0")
     WA_API_BASE: str = "https://graph.facebook.com"
 
     # -- App --

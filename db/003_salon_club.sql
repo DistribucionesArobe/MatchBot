@@ -6,14 +6,12 @@
 -- ============================================================
 -- 1. Crear segundo club
 -- ============================================================
-INSERT INTO clubs (id, name, slug, timezone, phone, address)
+INSERT INTO clubs (id, name, slug, timezone)
 VALUES (
     2,
     'Salón Multiusos Victoria',
     'salon-victoria',
-    'America/Mexico_City',
-    NULL,
-    NULL
+    'America/Mexico_City'
 )
 ON CONFLICT (id) DO NOTHING;
 

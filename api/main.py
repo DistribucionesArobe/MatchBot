@@ -60,6 +60,57 @@ async def startup():
 
 
 # ─────────────────────────────────────────────────────
+# CLUB ROUTING — map WhatsApp phone_number_id → club
+# ─────────────────────────────────────────────────────
+
+import os
+
+# Env-based routing: PHONE_NUMBER_ID_PADEL → club_id 1, PHONE_NUMBER_ID_SALON → club_id 2
+_PHONE_MAP = {}
+
+def _build_phone_map():
+    """Build phone_number_id → club mapping from env vars."""
+    global _PHONE_MAP
+    pairs = [
+        (os.getenv("PHONE_NUMBER_ID_PADEL", ""), 1, "Club de Padel Victoria"),
+        (os.getenv("PHONE_NUMBER_ID_SALON", ""), 2, "Salón Multiusos Victoria"),
+    ]
+    for phone_id, club_id, name in pairs:
+        if phone_id:
+            _PHONE_MAP[phone_id] = {
+                "id": club_id,
+                "name": name,
+                "wa_phone_id": phone_id,
+                "wa_token": os.getenv("WHATSAPP_TOKEN", ""),
+            }
+
+_build_phone_map()
+
+
+def _resolve_club(phone_number_id: str) -> dict | None:
+    """Resolve phone_number_id to club dict. Uses env vars, falls back to DB."""
+    if phone_number_id in _PHONE_MAP:
+        return _PHONE_MAP[phone_number_id]
+
+    # Fallback: try DB
+    try:
+        row = execute(
+            "SELECT * FROM clubs WHERE id = 1", [], fetch_one=True
+        )
+        if row:
+            return {
+                "id": row["id"],
+                "name": row["name"],
+                "wa_phone_id": phone_number_id,
+                "wa_token": os.getenv("WHATSAPP_TOKEN", ""),
+            }
+    except:
+        pass
+
+    return None
+
+
+# ─────────────────────────────────────────────────────
 # WHATSAPP WEBHOOK (Meta Cloud API)
 # ─────────────────────────────────────────────────────
 
@@ -95,11 +146,8 @@ async def webhook_receive(request: Request):
             metadata = value.get("metadata", {})
             phone_number_id = metadata.get("phone_number_id", "")
 
-            # Look up club
-            club = execute(
-                "SELECT * FROM clubs WHERE wa_phone_id = %s AND active = TRUE",
-                [phone_number_id], fetch_one=True
-            )
+            # Map phone_number_id → club using env vars
+            club = _resolve_club(phone_number_id)
             if not club:
                 logger.warning(f"Unknown phone_number_id: {phone_number_id}")
                 continue

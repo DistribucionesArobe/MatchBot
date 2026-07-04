@@ -25,11 +25,16 @@ Data stored in wa_booking_state.data (JSONB):
 """
 import json
 import logging
+import os
 from datetime import date, datetime, timedelta
 from db.database import execute
 from api.availability import get_available_slots, get_slots_summary, check_slot_available
 from api.bookings import create_booking, cancel_booking, get_customer_bookings, BookingError
+from api.playtomic_client import playtomic
 from whatsapp.sender import send_text, send_interactive_buttons, send_interactive_list
+
+# Use Playtomic for availability/booking if configured
+USE_PLAYTOMIC = bool(os.getenv("PLAYTOMIC_TENANT_ID", ""))
 
 logger = logging.getLogger("matchbot.flow")
 
@@ -165,14 +170,63 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
     target = date.fromisoformat(date_str)
     data["date"] = date_str
 
-    # Get available time slots
+    # ── PLAYTOMIC MODE ──
+    if USE_PLAYTOMIC:
+        availability = await playtomic.get_availability(date_str)
+
+        if not availability:
+            await send_text(phone_id, token, to, f"😕 No hay canchas disponibles para el {target.strftime('%d/%m/%Y')}. Intenta otro día.")
+            return
+
+        # Store availability in state for later use
+        data["playtomic_availability"] = availability
+
+        # Build list of times across all courts
+        time_slots = {}
+        for court in availability:
+            for slot in court["slots"]:
+                t = slot["time"]
+                if t not in time_slots:
+                    time_slots[t] = []
+                time_slots[t].append({
+                    "court": court["name"],
+                    "resource_id": slot["resource_id"],
+                    "price": slot["price"],
+                    "duration": slot["duration"],
+                    "start": slot["start"],
+                })
+
+        rows = []
+        for t in sorted(time_slots.keys()):
+            courts = time_slots[t]
+            n = len(courts)
+            min_price = min(c["price"] for c in courts)
+            rows.append({
+                "id": f"time_{t}",
+                "title": f"🕐 {t}",
+                "description": f"{n} cancha{'s' if n > 1 else ''} desde ${min_price:.0f}",
+            })
+
+        sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
+        _set_state(club_id, to, "choosing_time", data)
+
+        day_label = DAY_NAMES[target.weekday()]
+        await send_interactive_list(
+            phone_id, token, to,
+            body=f"⏰ Horarios para *{day_label} {target.day}/{target.month}*\nSelecciona un horario:",
+            button_text="Ver horarios",
+            sections=sections,
+            footer=f"{len(rows)} horarios disponibles"
+        )
+        return
+
+    # ── INTERNAL DB MODE (original) ──
     summary = get_slots_summary(club_id, target)
 
     if not summary:
         await send_text(phone_id, token, to, f"😕 No hay horarios disponibles para el {target.strftime('%d/%m/%Y')}. Intenta otro día.")
         return
 
-    # Build list: group by time
     rows = []
     for t in sorted(summary.keys()):
         courts = summary[t]
@@ -185,9 +239,7 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
             "description": f"{n} cancha{'s' if n > 1 else ''} desde ${min_price:.0f}",
         })
 
-    # WhatsApp list max 10 rows per section
     sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
-
     _set_state(club_id, to, "choosing_time", data)
 
     day_label = DAY_NAMES[target.weekday()]
@@ -214,9 +266,57 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
         return
 
     data["start_time"] = time_str
-    target = date.fromisoformat(data["date"])
 
-    # Get courts available at this time
+    # ── PLAYTOMIC MODE ──
+    if USE_PLAYTOMIC:
+        availability = data.get("playtomic_availability", [])
+        matching = []
+        for court in availability:
+            for slot in court["slots"]:
+                if slot["time"] == time_str:
+                    matching.append({
+                        "court_name": court["name"],
+                        "resource_id": slot["resource_id"],
+                        "price": slot["price"],
+                        "duration": slot["duration"],
+                        "start_iso": slot["start"],
+                    })
+
+        if not matching:
+            await send_text(phone_id, token, to, "😕 Ese horario ya no está disponible. Intenta otro.")
+            return
+
+        if len(matching) == 1:
+            c = matching[0]
+            data["court_name"] = c["court_name"]
+            data["resource_id"] = c["resource_id"]
+            data["price_cents"] = int(c["price"] * 100)
+            data["duration"] = c["duration"]
+            data["start_iso"] = c["start_iso"]
+            _set_state(club_id, to, "confirming", data)
+            await _send_confirmation(phone_id, token, to, data)
+            return
+
+        rows = []
+        for i, c in enumerate(matching):
+            rows.append({
+                "id": f"pcourt_{i}",
+                "title": c["court_name"][:24],
+                "description": f"${c['price']:.0f} MXN - {c['duration']}min",
+            })
+        data["playtomic_matching"] = matching
+        _set_state(club_id, to, "choosing_court", data)
+
+        await send_interactive_list(
+            phone_id, token, to,
+            body=f"🎾 Canchas disponibles a las *{time_str}*\n¿Cuál prefieres?",
+            button_text="Ver canchas",
+            sections=[{"title": "Canchas", "rows": rows}],
+        )
+        return
+
+    # ── INTERNAL DB MODE (original) ──
+    target = date.fromisoformat(data["date"])
     all_slots = get_available_slots(club_id, target)
     matching = [s for s in all_slots if s["start_time"] == time_str]
 
@@ -226,7 +326,6 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
         return
 
     if len(matching) == 1:
-        # Only one court → skip court selection
         court = matching[0]
         data["court_id"] = court["court_id"]
         data["court_name"] = court["court_name"]
@@ -237,7 +336,6 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
         await _send_confirmation(phone_id, token, to, data)
         return
 
-    # Multiple courts → let user choose
     rows = []
     for s in matching:
         price = s["price_cents"] / 100
@@ -263,6 +361,22 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
 # ─────────────────────────────────────────────────────
 
 async def _handle_court_chosen(phone_id, token, to, club_id, text, button_id, data):
+    # ── PLAYTOMIC MODE ──
+    if USE_PLAYTOMIC and button_id and button_id.startswith("pcourt_"):
+        idx = int(button_id.replace("pcourt_", ""))
+        matching = data.get("playtomic_matching", [])
+        if idx < len(matching):
+            c = matching[idx]
+            data["court_name"] = c["court_name"]
+            data["resource_id"] = c["resource_id"]
+            data["price_cents"] = int(c["price"] * 100)
+            data["duration"] = c["duration"]
+            data["start_iso"] = c["start_iso"]
+            _set_state(club_id, to, "confirming", data)
+            await _send_confirmation(phone_id, token, to, data)
+            return
+
+    # ── INTERNAL DB MODE (original) ──
     court_id = None
     if button_id and button_id.startswith("court_"):
         court_id = int(button_id.replace("court_", ""))
@@ -295,19 +409,20 @@ async def _handle_court_chosen(phone_id, token, to, club_id, text, button_id, da
 
 async def _send_confirmation(phone_id, token, to, data):
     price = data["price_cents"] / 100
-    tipo = "Techada" if data.get("court_type") == "covered" else "Abierta"
+    duration = data.get("duration", 90)
+
+    body = (
+        f"📋 *Resumen de tu reserva:*\n\n"
+        f"📅 Fecha: *{data['date']}*\n"
+        f"🕐 Horario: *{data['start_time']}* ({duration}min)\n"
+        f"🎾 Cancha: *{data['court_name']}*\n"
+        f"💰 Precio: *${price:.0f} MXN*\n\n"
+        f"¿Confirmas la reserva?"
+    )
 
     await send_interactive_buttons(
         phone_id, token, to,
-        body=(
-            f"📋 *Resumen de tu reserva:*\n\n"
-            f"📅 Fecha: *{data['date']}*\n"
-            f"🕐 Horario: *{data['start_time']} - {data['end_time']}*\n"
-            f"🎾 Cancha: *{data['court_name']}*\n"
-            f"   ({tipo})\n"
-            f"💰 Precio: *${price:.0f} MXN*\n\n"
-            f"¿Confirmas la reserva?"
-        ),
+        body=body,
         buttons=[
             {"id": "btn_confirm_yes", "title": "✅ Confirmar"},
             {"id": "btn_confirm_no", "title": "❌ Cancelar"},
@@ -356,6 +471,60 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
 
     data["payment_method"] = method
 
+    # ── PLAYTOMIC MODE ──
+    if USE_PLAYTOMIC and data.get("resource_id"):
+        result = await playtomic.create_booking(
+            resource_id=data["resource_id"],
+            start_time=data.get("start_iso", ""),
+            duration=data.get("duration", 90),
+            customer_name="",
+            customer_phone=to,
+        )
+
+        _set_state(club_id, to, "idle", {})
+        price = data["price_cents"] / 100
+        method_labels = {"cash": "Efectivo en club", "transfer": "Transferencia", "card": "Tarjeta"}
+
+        if result.get("error"):
+            # Booking on Playtomic failed — still notify and log
+            logger.warning(f"Playtomic booking failed: {result['error']}")
+            confirmation_msg = (
+                f"✅ *¡Reserva registrada!*\n\n"
+                f"📅 {data['date']}\n"
+                f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
+                f"🎾 {data['court_name']}\n"
+                f"💰 ${price:.0f} MXN\n"
+                f"💳 {method_labels.get(method, method)}\n\n"
+                f"⚠️ La reserva se confirmará manualmente.\n"
+                f"Te avisaremos cuando esté lista.\n\n"
+                f"¡Nos vemos en la cancha! 🎾"
+            )
+        else:
+            confirmation_msg = (
+                f"✅ *¡Reserva confirmada!*\n\n"
+                f"📅 {data['date']}\n"
+                f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
+                f"🎾 {data['court_name']}\n"
+                f"💰 ${price:.0f} MXN\n"
+                f"💳 {method_labels.get(method, method)}\n\n"
+            )
+            if method == "cash":
+                confirmation_msg += "💵 Paga al llegar al club.\n"
+            elif method == "transfer":
+                confirmation_msg += (
+                    "🏦 *Datos para transferencia:*\n"
+                    "Banco: [CONFIGURAR]\n"
+                    "CLABE: [CONFIGURAR]\n"
+                    "Envía tu comprobante por este chat.\n"
+                )
+            elif method == "card":
+                confirmation_msg += "💳 Te enviaremos el link de pago en breve.\n"
+            confirmation_msg += "\n¡Nos vemos en la cancha! 🎾"
+
+        await send_text(phone_id, token, to, confirmation_msg)
+        return
+
+    # ── INTERNAL DB MODE (original) ──
     try:
         booking = create_booking(
             club_id=club_id,
