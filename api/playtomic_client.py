@@ -92,15 +92,27 @@ class PlaytomicClient:
         results = []
         for resource in data:
             resource_id = resource.get("resource_id", "")
-            resource_name = resource.get("resource_name", f"Cancha {resource_id}")
+            resource_name = resource.get("resource_name") or resource.get("name") or f"Cancha {resource_id}"
 
             slots = []
             for slot in resource.get("slots", []):
-                start = slot.get("start_time", "")
-                duration = slot.get("duration", 90)
+                start = slot.get("start_time") or slot.get("start", "")
+                try:
+                    duration = int(slot.get("duration", 90))
+                except (ValueError, TypeError):
+                    duration = 90
                 price = slot.get("price", 0)
 
                 # Parse time for display
+                # Normalize price to float
+                if isinstance(price, dict):
+                    price = float(price.get("amount", 0))
+                else:
+                    try:
+                        price = float(price)
+                    except (ValueError, TypeError):
+                        price = 0.0
+
                 if start:
                     try:
                         t = datetime.fromisoformat(start.replace("Z", "+00:00"))
