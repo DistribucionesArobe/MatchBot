@@ -1,11 +1,16 @@
 """
 Playtomic API Client for MatchBot
-Handles: authentication, availability queries, booking creation
-Based on reverse-engineered API from community projects.
+Handles: authentication, availability queries, booking creation.
+
+Auth flow (reverse-engineered from manager.playtomic.io):
+  1. POST /v3/auth/login  → customer access_token + refresh_token
+  2. POST /v3/auth/token  → tenant-scoped access_token (needed for bookings)
+  3. POST /v1/matches      → creates booking with tenant token
 """
 
 import httpx
 import os
+import re
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -21,14 +26,15 @@ PLAYTOMIC_PASSWORD = os.getenv("PLAYTOMIC_PASSWORD", "")
 
 class PlaytomicClient:
     def __init__(self):
-        self.token: Optional[str] = None
+        self.token: Optional[str] = None          # customer token
+        self.tenant_token: Optional[str] = None    # tenant-scoped token (for bookings)
         self.refresh_token: Optional[str] = None
         self.user_id: Optional[str] = None
         self.client = httpx.AsyncClient(timeout=15.0)
 
     # ─── AUTH ───
     async def login(self) -> bool:
-        """Authenticate with Playtomic and get access token."""
+        """Step 1: Authenticate with email/password → customer token + refresh token."""
         if not PLAYTOMIC_EMAIL or not PLAYTOMIC_PASSWORD:
             logger.error("PLAYTOMIC_EMAIL / PLAYTOMIC_PASSWORD not set")
             return False
@@ -36,10 +42,7 @@ class PlaytomicClient:
         try:
             r = await self.client.post(
                 f"{PLAYTOMIC_API}/v3/auth/login",
-                json={
-                    "email": PLAYTOMIC_EMAIL,
-                    "password": PLAYTOMIC_PASSWORD,
-                },
+                json={"email": PLAYTOMIC_EMAIL, "password": PLAYTOMIC_PASSWORD},
             )
             if r.status_code == 200:
                 data = r.json()
@@ -55,10 +58,50 @@ class PlaytomicClient:
             logger.error(f"Playtomic login error: {e}")
             return False
 
+    async def get_tenant_token(self) -> bool:
+        """Step 2: Exchange refresh_token for a tenant-scoped access token.
+        This is required for manager operations (creating bookings).
+        """
+        if not self.refresh_token:
+            logger.error("No refresh token available for tenant token exchange")
+            return False
+
+        try:
+            r = await self.client.post(
+                f"{PLAYTOMIC_API}/v3/auth/token",
+                json={
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.refresh_token,
+                    "scope": f"tenant:{TENANT_ID}",
+                },
+            )
+            if r.status_code == 200:
+                data = r.json()
+                self.tenant_token = data.get("access_token")
+                # The exchange may return a new refresh token
+                new_rt = data.get("refresh_token")
+                if new_rt:
+                    self.refresh_token = new_rt
+                logger.info("Tenant token obtained OK")
+                return True
+            else:
+                logger.error(f"Tenant token exchange failed: {r.status_code} {r.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Tenant token exchange error: {e}")
+            return False
+
     async def ensure_auth(self):
-        """Ensure we have a valid token, login if needed."""
+        """Ensure we have a valid customer token."""
         if not self.token:
             await self.login()
+
+    async def ensure_tenant_auth(self):
+        """Ensure we have a valid tenant-scoped token for bookings."""
+        if not self.token:
+            await self.login()
+        if not self.tenant_token:
+            await self.get_tenant_token()
 
     # ─── AVAILABILITY (public, no auth needed) ───
     async def get_availability(self, date_str: str) -> list:
@@ -93,7 +136,6 @@ class PlaytomicClient:
         [{"resource_id": "uuid", "start_date": "2026-07-05",
           "slots": [{"start_time": "21:00:00", "duration": 90, "price": "300 MXN"}]}]
         """
-        import re
         results = []
         for i, resource in enumerate(data):
             resource_id = resource.get("resource_id", "")
@@ -172,7 +214,7 @@ class PlaytomicClient:
 
         return "\n".join(lines)
 
-    # ─── BOOKING (requires auth) ───
+    # ─── BOOKING (requires tenant-scoped auth) ───
     async def create_booking(
         self,
         resource_id: str,
@@ -182,33 +224,63 @@ class PlaytomicClient:
         customer_phone: str = "",
     ) -> dict:
         """
-        Create a booking on Playtomic.
-        Flow: POST /v1/matches → POST /v1/payment_intents → PATCH → confirm.
+        Create a booking on Playtomic as the club manager.
+        Uses POST /v1/matches with tenant-scoped token.
+        This is the same API the manager.playtomic.io dashboard uses.
         """
-        await self.ensure_auth()
-        if not self.token:
-            return {"error": "No se pudo autenticar con Playtomic"}
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return {"error": "No se pudo obtener token de manager Playtomic"}
 
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {self.tenant_token}",
             "Content-Type": "application/json",
         }
 
+        # Calculate end_time from start + duration
         try:
-            # Step 1: Create match
-            match_payload = {
-                "tenant_id": TENANT_ID,
-                "resource_id": resource_id,
-                "sport_id": "PADEL",
-                "start": start_time,
-                "duration": duration,
-                "number_of_players": 4,
-                "match_registrations": [
-                    {"user_id": self.user_id, "pay_now": False}
-                ],
-            }
+            start_dt = datetime.fromisoformat(start_time)
+            end_dt = start_dt + timedelta(minutes=duration)
+            end_time = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        except (ValueError, TypeError):
+            end_time = start_time  # fallback
 
-            logger.info(f"Creating match for {resource_id} at {start_time}")
+        # Build player entry for Team A
+        player = {}
+        if customer_name:
+            player["name"] = customer_name
+        if customer_phone:
+            # Playtomic expects phone without country code prefix in some cases
+            player["phone"] = customer_phone
+
+        teams = [
+            {
+                "team_id": "0",
+                "players": [player] if player else [],
+            },
+            {
+                "team_id": "1",
+                "players": [],
+            },
+        ]
+
+        match_payload = {
+            "sport_id": "PADEL",
+            "tenant_id": TENANT_ID,
+            "resource_id": resource_id,
+            "start_date": start_time,
+            "end_date": end_time,
+            "match_type": "BOOKING",
+            "match_organization": "TENANT",
+            "visibility": "HIDDEN",
+            "competition_mode": "COMPETITIVE",
+            "min_players_per_team": 2,
+            "max_players_per_team": 2,
+            "teams": teams,
+        }
+
+        try:
+            logger.info(f"Creating Playtomic booking: {resource_id} at {start_time} for {customer_name}")
             r = await self.client.post(
                 f"{PLAYTOMIC_API}/v1/matches",
                 headers=headers,
@@ -216,91 +288,31 @@ class PlaytomicClient:
             )
 
             if r.status_code == 401:
-                logger.info("Token expired, re-authenticating...")
+                # Tenant token expired — refresh and retry once
+                logger.info("Tenant token expired, refreshing...")
+                self.tenant_token = None
                 await self.login()
-                return await self.create_booking(
-                    resource_id, start_time, duration,
-                    customer_name, customer_phone,
-                )
+                await self.get_tenant_token()
+                if self.tenant_token:
+                    headers["Authorization"] = f"Bearer {self.tenant_token}"
+                    r = await self.client.post(
+                        f"{PLAYTOMIC_API}/v1/matches",
+                        headers=headers,
+                        json=match_payload,
+                    )
+                else:
+                    return {"error": "No se pudo renovar el token de manager"}
 
-            logger.info(f"Create match response: {r.status_code} {r.text[:500]}")
+            logger.info(f"Create booking response: {r.status_code} {r.text[:500]}")
 
-            if r.status_code not in (200, 201):
-                return {"error": f"Error al crear match: {r.status_code} - {r.text[:200]}"}
-
-            match_data = r.json()
-            match_id = match_data.get("match_id") or match_data.get("id", "")
-            logger.info(f"Match created: {match_id}")
-
-            if not match_id:
-                # Maybe the match creation itself completes the booking
-                return {"success": True, "booking": match_data}
-
-            # Step 2: Create payment intent for this match
-            intent_payload = {
-                "allowed_payment_method_types": ["OFFER"],
-                "user_id": self.user_id,
-                "cart": {
-                    "requested_item": {
-                        "cart_item_type": "MATCH",
-                        "cart_item_voucher_id": None,
-                        "cart_item_data": {
-                            "supports_split_payment": False,
-                            "number_of_players": 4,
-                            "tenant_id": TENANT_ID,
-                            "resource_id": resource_id,
-                            "start": start_time,
-                            "duration": duration,
-                            "match_id": match_id,
-                            "match_registrations": [
-                                {"user_id": self.user_id, "pay_now": False, "match_id": match_id}
-                            ],
-                        }
-                    }
-                }
-            }
-
-            r2 = await self.client.post(
-                f"{PLAYTOMIC_API}/v1/payment_intents",
-                headers=headers,
-                json=intent_payload,
-            )
-            logger.info(f"Payment intent response: {r2.status_code} {r2.text[:500]}")
-
-            if r2.status_code not in (200, 201):
-                # Match was created but payment failed — might still be ok
-                return {"success": True, "booking": match_data, "note": "Match created, payment pending"}
-
-            intent_data = r2.json()
-            intent_id = intent_data.get("payment_intent_id", "")
-
-            if not intent_id:
-                return {"success": True, "booking": match_data}
-
-            # Step 3: Select payment method
-            available_methods = intent_data.get("available_payment_methods", [])
-            selected_method = "OFFER"
-            if available_methods:
-                for m in available_methods:
-                    mt = m if isinstance(m, str) else m.get("payment_method_type", "")
-                    if mt in ("OFFER", "CASH", "FREE", "IN_PERSON"):
-                        selected_method = mt
-                        break
-
-            await self.client.patch(
-                f"{PLAYTOMIC_API}/v1/payment_intents/{intent_id}",
-                headers=headers,
-                json={"selected_payment_method": selected_method},
-            )
-
-            # Step 4: Confirm
-            r4 = await self.client.post(
-                f"{PLAYTOMIC_API}/v1/payment_intents/{intent_id}/confirmation",
-                headers=headers,
-            )
-            logger.info(f"Confirmation response: {r4.status_code} {r4.text[:300]}")
-
-            return {"success": True, "booking": match_data, "payment_intent_id": intent_id}
+            if r.status_code in (200, 201):
+                match_data = r.json()
+                match_id = match_data.get("match_id", "")
+                logger.info(f"Booking created OK — match_id: {match_id}")
+                return {"success": True, "booking": match_data, "match_id": match_id}
+            else:
+                logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
+                return {"error": f"Error al crear reserva: {r.status_code} - {r.text[:200]}"}
 
         except Exception as e:
             logger.error(f"Booking exception: {e}")

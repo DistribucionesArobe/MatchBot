@@ -500,7 +500,7 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
             resource_id=data["resource_id"],
             start_time=data.get("start_iso", ""),
             duration=data.get("duration", 90),
-            customer_name="",
+            customer_name=data.get("customer_name", ""),
             customer_phone=to,
         )
 
