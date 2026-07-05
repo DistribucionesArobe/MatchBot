@@ -117,22 +117,49 @@ class PlaytomicClient:
         if self._resource_names:
             return  # already loaded
 
+        # Try multiple endpoints to find resource names
+        # Method 1: /v1/tenants/{id} — tenant info with resources
         try:
             r = await self.client.get(f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}")
             if r.status_code == 200:
                 info = r.json()
-                # Playtomic tenant info includes resources array
+                logger.info(f"Tenant info keys: {list(info.keys())}")
+
+                # Try different locations where resources might be
                 resources = info.get("resources", [])
+                if not resources:
+                    resources = info.get("facilities", [])
+
                 for res in resources:
                     rid = res.get("resource_id", res.get("id", ""))
-                    name = res.get("name", "")
+                    name = res.get("name", res.get("resource_name", ""))
                     if rid and name:
                         self._resource_names[rid] = name
-                logger.info(f"Loaded {len(self._resource_names)} resource names: {list(self._resource_names.values())}")
-            else:
-                logger.warning(f"Could not load tenant info: {r.status_code}")
+
+                logger.info(f"Method 1: loaded {len(self._resource_names)} names: {list(self._resource_names.values())}")
         except Exception as e:
-            logger.warning(f"Could not load resource names: {e}")
+            logger.warning(f"Tenant info error: {e}")
+
+        # Method 2: if Method 1 didn't work, try /v1/tenants/{id}/resources
+        if not self._resource_names:
+            try:
+                r = await self.client.get(f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}/resources")
+                if r.status_code == 200:
+                    resources = r.json()
+                    if isinstance(resources, list):
+                        for res in resources:
+                            rid = res.get("resource_id", res.get("id", ""))
+                            name = res.get("name", res.get("resource_name", ""))
+                            if rid and name:
+                                self._resource_names[rid] = name
+                    logger.info(f"Method 2: loaded {len(self._resource_names)} names: {list(self._resource_names.values())}")
+                else:
+                    logger.warning(f"Resources endpoint: {r.status_code} {r.text[:200]}")
+            except Exception as e:
+                logger.warning(f"Resources endpoint error: {e}")
+
+        if not self._resource_names:
+            logger.warning("Could not load resource names from any endpoint")
 
     def _get_resource_name(self, resource_id: str, fallback_index: int) -> str:
         """Get display name for a resource, with fallback."""

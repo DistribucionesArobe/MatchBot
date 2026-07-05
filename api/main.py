@@ -416,6 +416,71 @@ async def api_playtomic_cancel(match_id: str):
 
 
 # ─────────────────────────────────────────────────────
+# ADMIN API — Playtomic Diagnostics
+# ─────────────────────────────────────────────────────
+
+@app.get("/api/playtomic/debug")
+async def api_playtomic_debug(date: str = Query("2026-07-05")):
+    """Debug: show raw Playtomic responses for tenant info + availability."""
+    import httpx
+
+    tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
+    api = "https://api.playtomic.io"
+    results = {}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        # 1. Tenant info
+        try:
+            r = await client.get(f"{api}/v1/tenants/{tenant_id}")
+            info = r.json() if r.status_code == 200 else r.text
+            # Extract just the keys and resources summary
+            if isinstance(info, dict):
+                resources = info.get("resources", info.get("facilities", []))
+                results["tenant_keys"] = list(info.keys())
+                results["resources_count"] = len(resources)
+                results["resources"] = [
+                    {k: v for k, v in r.items() if k in ("resource_id", "id", "name", "resource_name", "sport_id")}
+                    for r in (resources[:10] if isinstance(resources, list) else [])
+                ]
+            else:
+                results["tenant_raw"] = str(info)[:500]
+        except Exception as e:
+            results["tenant_error"] = str(e)
+
+        # 2. Availability raw (first 2 items)
+        try:
+            offset_h = abs(int(os.getenv("CLUB_UTC_OFFSET", "-6")))
+            from datetime import date as d, timedelta
+            target = d.fromisoformat(date)
+            next_day = (target + timedelta(days=1)).isoformat()
+
+            r = await client.get(f"{api}/v1/availability", params={
+                "user_id": "me", "sport_id": "PADEL", "tenant_id": tenant_id,
+                "start_min": f"{date}T{offset_h:02d}:00:00",
+                "start_max": f"{next_day}T{offset_h:02d}:00:00",
+            })
+            if r.status_code == 200:
+                avail = r.json()
+                results["availability_count"] = len(avail) if isinstance(avail, list) else "not a list"
+                if isinstance(avail, list) and avail:
+                    results["availability_sample_keys"] = list(avail[0].keys())
+                    # Show first item with limited slots
+                    sample = dict(avail[0])
+                    if "slots" in sample:
+                        sample["slots"] = sample["slots"][:3]
+                    results["availability_sample"] = sample
+            else:
+                results["availability_error"] = f"{r.status_code}: {r.text[:300]}"
+        except Exception as e:
+            results["availability_error"] = str(e)
+
+    # 3. Cached resource names
+    results["cached_resource_names"] = playtomic._resource_names
+
+    return results
+
+
+# ─────────────────────────────────────────────────────
 # Health check
 # ─────────────────────────────────────────────────────
 
