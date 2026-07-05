@@ -111,20 +111,33 @@ class PlaytomicClient:
         Returns list of available slots grouped by court.
         """
         try:
+            # Use local_start_min/max so Playtomic interprets as club timezone
+            params = {
+                "user_id": "me",
+                "sport_id": "PADEL",
+                "tenant_id": TENANT_ID,
+                "local_start_min": f"{date_str}T00:00:00",
+                "local_start_max": f"{date_str}T23:59:59",
+            }
+            logger.info(f"Querying availability: {params}")
             r = await self.client.get(
                 f"{PLAYTOMIC_API}/v1/availability",
-                params={
-                    "sport_id": "PADEL",
-                    "tenant_id": TENANT_ID,
-                    "start_min": f"{date_str}T00:00:00",
-                    "start_max": f"{date_str}T23:59:59",
-                },
+                params=params,
             )
             if r.status_code == 200:
                 data = r.json()
+                # Log raw response summary for debugging
+                if isinstance(data, list):
+                    logger.info(f"Availability response: {len(data)} resources")
+                    for res in data:
+                        slots = res.get("slots", [])
+                        name = res.get("resource_name", res.get("name", res.get("resource_id", "?")))
+                        logger.info(f"  {name}: {len(slots)} slots")
+                else:
+                    logger.info(f"Availability raw (not list): {str(data)[:500]}")
                 return self._parse_availability(data)
             else:
-                logger.error(f"Availability error: {r.status_code} {r.text}")
+                logger.error(f"Availability error: {r.status_code} {r.text[:500]}")
                 return []
         except Exception as e:
             logger.error(f"Availability error: {e}")
@@ -132,10 +145,38 @@ class PlaytomicClient:
 
     def _parse_availability(self, data: list) -> list:
         """Parse raw Playtomic availability response.
-        Actual format from API:
+        Handles multiple response formats from Playtomic API:
+
+        Format A (slots array):
         [{"resource_id": "uuid", "start_date": "2026-07-05",
           "slots": [{"start_time": "21:00:00", "duration": 90, "price": "300 MXN"}]}]
+
+        Format B (flat per-slot):
+        [{"resource_id": "uuid", "resource_name": "Cancha 1",
+          "start_date": "2026-07-05", "start_time": "21:00:00",
+          "duration": 90, "price": 300}]
         """
+        if not data or not isinstance(data, list):
+            logger.warning(f"Unexpected availability data type: {type(data)}")
+            return []
+
+        # Detect format: if first item has "slots" array, it's Format A
+        # If first item has "start_time" at top level, it's Format B (flat)
+        sample = data[0] if data else {}
+
+        if "slots" in sample:
+            return self._parse_format_slots(data)
+        elif "start_time" in sample or "start" in sample:
+            return self._parse_format_flat(data)
+        else:
+            # Unknown format — log it
+            logger.warning(f"Unknown availability format. Keys: {list(sample.keys())}")
+            logger.warning(f"Sample entry: {str(sample)[:500]}")
+            # Try Format A as fallback
+            return self._parse_format_slots(data)
+
+    def _parse_format_slots(self, data: list) -> list:
+        """Parse Format A: each resource has a 'slots' array."""
         results = []
         for i, resource in enumerate(data):
             resource_id = resource.get("resource_id", "")
@@ -148,41 +189,9 @@ class PlaytomicClient:
 
             slots = []
             for slot in resource.get("slots", []):
-                raw_time = slot.get("start_time") or slot.get("start", "")
-
-                # Duration → int
-                try:
-                    duration = int(slot.get("duration", 90))
-                except (ValueError, TypeError):
-                    duration = 90
-
-                # Price: "300 MXN" → 300.0, or 300 → 300.0, or {"amount":300}
-                raw_price = slot.get("price", 0)
-                if isinstance(raw_price, dict):
-                    price = float(raw_price.get("amount", 0))
-                elif isinstance(raw_price, str):
-                    match = re.search(r'[\d.]+', raw_price)
-                    price = float(match.group()) if match else 0.0
-                else:
-                    try:
-                        price = float(raw_price)
-                    except (ValueError, TypeError):
-                        price = 0.0
-
-                # Display time: "21:00:00" → "21:00"
-                time_str = raw_time[:5] if len(raw_time) >= 5 else raw_time
-
-                # Full ISO datetime for booking: "2026-07-05T21:00:00"
-                start_iso = f"{start_date}T{raw_time}" if start_date else raw_time
-
-                if raw_time:
-                    slots.append({
-                        "start": start_iso,
-                        "time": time_str,
-                        "duration": duration,
-                        "price": price,
-                        "resource_id": resource_id,
-                    })
+                parsed = self._parse_slot(slot, resource_id, start_date)
+                if parsed:
+                    slots.append(parsed)
 
             if slots:
                 results.append({
@@ -192,6 +201,79 @@ class PlaytomicClient:
                 })
 
         return results
+
+    def _parse_format_flat(self, data: list) -> list:
+        """Parse Format B: flat list where each item is one slot."""
+        # Group by resource_id
+        by_resource = {}
+        for item in data:
+            resource_id = item.get("resource_id", "")
+            resource_name = (
+                item.get("resource_name")
+                or item.get("name")
+                or ""
+            )
+            start_date = item.get("start_date", item.get("date", ""))
+
+            parsed = self._parse_slot(item, resource_id, start_date)
+            if parsed:
+                if resource_id not in by_resource:
+                    by_resource[resource_id] = {
+                        "resource_id": resource_id,
+                        "name": resource_name or f"Cancha {len(by_resource) + 1}",
+                        "slots": [],
+                    }
+                by_resource[resource_id]["slots"].append(parsed)
+
+        return list(by_resource.values())
+
+    def _parse_slot(self, slot: dict, resource_id: str, start_date: str) -> dict | None:
+        """Parse a single slot from any format."""
+        raw_time = (
+            slot.get("start_time")
+            or slot.get("start", "")
+        )
+        if not raw_time:
+            return None
+
+        # If raw_time is a full ISO datetime, extract date and time
+        if "T" in raw_time:
+            parts = raw_time.split("T")
+            start_date = parts[0]
+            raw_time = parts[1]
+
+        # Duration → int
+        try:
+            duration = int(slot.get("duration", 90))
+        except (ValueError, TypeError):
+            duration = 90
+
+        # Price: "300 MXN" → 300.0, or 300 → 300.0, or {"amount":300}
+        raw_price = slot.get("price", 0)
+        if isinstance(raw_price, dict):
+            price = float(raw_price.get("amount", 0))
+        elif isinstance(raw_price, str):
+            match = re.search(r'[\d.]+', raw_price)
+            price = float(match.group()) if match else 0.0
+        else:
+            try:
+                price = float(raw_price)
+            except (ValueError, TypeError):
+                price = 0.0
+
+        # Display time: "21:00:00" → "21:00"
+        time_str = raw_time[:5] if len(raw_time) >= 5 else raw_time
+
+        # Full ISO datetime for booking: "2026-07-05T21:00:00"
+        start_iso = f"{start_date}T{raw_time}" if start_date else raw_time
+
+        return {
+            "start": start_iso,
+            "time": time_str,
+            "duration": duration,
+            "price": price,
+            "resource_id": resource_id,
+        }
 
     def format_availability_whatsapp(self, availability: list, date_str: str) -> str:
         """Format availability data as a WhatsApp-friendly message."""
