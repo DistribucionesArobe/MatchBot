@@ -36,6 +36,9 @@ from whatsapp.sender import send_text, send_interactive_buttons, send_interactiv
 # Use Playtomic for availability/booking if configured
 USE_PLAYTOMIC = bool(os.getenv("PLAYTOMIC_TENANT_ID", ""))
 
+# Club owner notification — receives WhatsApp alerts on new bookings/cancellations
+CLUB_NOTIFY_PHONE = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
+
 logger = logging.getLogger("matchbot.flow")
 
 # Keyword triggers
@@ -522,6 +525,25 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
             confirmation_msg += "\n¡Nos vemos en la cancha! 🎾"
 
         await send_text(phone_id, token, to, confirmation_msg)
+
+        # Notify club owner
+        if CLUB_NOTIFY_PHONE:
+            notify_msg = (
+                f"🔔 *Nueva reserva por WhatsApp*\n\n"
+                f"👤 Cliente: {to}\n"
+                f"📅 {data['date']} a las {data['start_time']}\n"
+                f"🎾 {data['court_name']}\n"
+                f"💰 ${price:.0f} MXN — {method_labels.get(method, method)}\n"
+            )
+            if result.get("error"):
+                notify_msg += f"\n⚠️ No se pudo registrar en Playtomic: {result['error']}\nFavor de registrarla manualmente."
+            else:
+                notify_msg += "\n✅ Registrada en Playtomic automáticamente."
+            try:
+                await send_text(phone_id, token, CLUB_NOTIFY_PHONE, notify_msg)
+            except Exception as e:
+                logger.error(f"Failed to notify club: {e}")
+
         return
 
     # ── INTERNAL DB MODE (original) ──
@@ -639,6 +661,19 @@ async def _handle_cancel_confirm(phone_id, token, to, club_id, text, button_id, 
         cancel_booking(booking_id, club_id)
         _set_state(club_id, to, "idle", {})
         await send_text(phone_id, token, to, f"✅ Reserva #{booking_id} cancelada exitosamente.")
+
+        # Notify club owner about cancellation
+        if CLUB_NOTIFY_PHONE:
+            try:
+                await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                    f"❌ *Cancelación de reserva*\n\n"
+                    f"👤 Cliente: {to}\n"
+                    f"📋 Reserva #{booking_id}\n\n"
+                    f"Favor de verificar en Playtomic."
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify club about cancellation: {e}")
+
     except BookingError as e:
         _set_state(club_id, to, "idle", {})
         await send_text(phone_id, token, to, f"😕 {str(e)}")
