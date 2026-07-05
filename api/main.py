@@ -152,6 +152,12 @@ async def webhook_receive(request: Request):
                 logger.warning(f"Unknown phone_number_id: {phone_number_id}")
                 continue
 
+            # Extract WhatsApp profile name from contacts
+            contacts = value.get("contacts", [])
+            wa_profile_name = ""
+            if contacts:
+                wa_profile_name = contacts[0].get("profile", {}).get("name", "")
+
             for msg in messages:
                 wa_msg_id = msg.get("id", "")
 
@@ -183,13 +189,13 @@ async def webhook_receive(request: Request):
                     _buffer_tasks[buf_key].cancel()
 
                 _buffer_tasks[buf_key] = asyncio.create_task(
-                    _process_buffered(buf_key, dict(club), sender)
+                    _process_buffered(buf_key, dict(club), sender, wa_profile_name)
                 )
 
     return JSONResponse({"status": "ok"})
 
 
-async def _process_buffered(buf_key: str, club: dict, sender: str):
+async def _process_buffered(buf_key: str, club: dict, sender: str, profile_name: str = ""):
     """Wait for buffer window, then process the last message."""
     await asyncio.sleep(settings.MSG_BUFFER_SECONDS)
 
@@ -202,7 +208,7 @@ async def _process_buffered(buf_key: str, club: dict, sender: str):
     # Process only the last message (user's final intent)
     last_msg = messages[-1]
     try:
-        await handle_message(club, sender, last_msg)
+        await handle_message(club, sender, last_msg, profile_name=profile_name)
     except Exception as e:
         logger.error(f"Error handling message from {sender}: {e}", exc_info=True)
 

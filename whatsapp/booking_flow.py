@@ -11,6 +11,10 @@ States:
     choosing_payment-> Ask payment method
     done            -> Booking created, send confirmation
 
+Note: Customer name is auto-detected from WhatsApp profile.
+      Customer phone is the sender's WhatsApp number.
+      No need to ask — both come from the message.
+
 Data stored in wa_booking_state.data (JSONB):
     {
         "date": "2026-04-10",
@@ -20,7 +24,8 @@ Data stored in wa_booking_state.data (JSONB):
         "court_name": "Cancha Techada 4 - Aceromax",
         "price_cents": 45000,
         "payment_method": "cash",
-        "customer_name": "Carlos"
+        "customer_name": "Carlos",
+        "customer_phone": "521234567890"
     }
 """
 import json
@@ -52,10 +57,11 @@ DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 MONTH_NAMES = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
 
-async def handle_message(club: dict, wa_phone: str, message: dict):
+async def handle_message(club: dict, wa_phone: str, message: dict, profile_name: str = ""):
     """
     Main entry point. Process an incoming WhatsApp message.
     club = {id, name, wa_phone_id, wa_token, ...}
+    profile_name = WhatsApp profile name (auto-detected from webhook contacts)
     """
     phone_id = club["wa_phone_id"]
     token = club["wa_token"]
@@ -70,6 +76,11 @@ async def handle_message(club: dict, wa_phone: str, message: dict):
     state = state_row["state"] if state_row else "idle"
     data = state_row["data"] if state_row else {}
 
+    # Always keep customer info updated from WhatsApp
+    data["customer_phone"] = wa_phone
+    if profile_name:
+        data["customer_name"] = profile_name
+
     # ── MENU / GREETING ──
     if state == "idle" and (text_lower in GREETINGS or text_lower in MENU_TRIGGERS or button_id == "btn_menu"):
         await _send_main_menu(phone_id, token, wa_phone, club["name"])
@@ -77,7 +88,10 @@ async def handle_message(club: dict, wa_phone: str, message: dict):
 
     # ── START BOOKING ──
     if text_lower in BOOK_TRIGGERS or button_id == "btn_reservar":
-        _set_state(club_id, wa_phone, "choosing_date", {})
+        initial_data = {"customer_phone": wa_phone}
+        if profile_name:
+            initial_data["customer_name"] = profile_name
+        _set_state(club_id, wa_phone, "choosing_date", initial_data)
         await _send_date_picker(phone_id, token, wa_phone)
         return
 
@@ -98,8 +112,6 @@ async def handle_message(club: dict, wa_phone: str, message: dict):
         await _handle_time_chosen(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "choosing_court":
         await _handle_court_chosen(phone_id, token, wa_phone, club_id, text, button_id, data)
-    elif state == "asking_name":
-        await _handle_name_input(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "confirming":
         await _handle_confirm(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "choosing_payment":
@@ -298,8 +310,8 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
             data["price_cents"] = int(c["price"] * 100)
             data["duration"] = c["duration"]
             data["start_iso"] = c["start_iso"]
-            _set_state(club_id, to, "asking_name", data)
-            await send_text(phone_id, token, to, "👤 ¿A nombre de quién es la reserva?")
+            _set_state(club_id, to, "confirming", data)
+            await _send_confirmation(phone_id, token, to, data)
             return
 
         rows = []
@@ -377,8 +389,8 @@ async def _handle_court_chosen(phone_id, token, to, club_id, text, button_id, da
             data["price_cents"] = int(c["price"] * 100)
             data["duration"] = c["duration"]
             data["start_iso"] = c["start_iso"]
-            _set_state(club_id, to, "asking_name", data)
-            await send_text(phone_id, token, to, "👤 ¿A nombre de quién es la reserva?")
+            _set_state(club_id, to, "confirming", data)
+            await _send_confirmation(phone_id, token, to, data)
             return
 
     # ── INTERNAL DB MODE (original) ──
@@ -409,22 +421,6 @@ async def _handle_court_chosen(phone_id, token, to, club_id, text, button_id, da
 
 
 # ─────────────────────────────────────────────────────
-# NAME INPUT → then confirm
-# ─────────────────────────────────────────────────────
-
-async def _handle_name_input(phone_id, token, to, club_id, text, button_id, data):
-    """Capture customer name, then show confirmation."""
-    name = (text or "").strip()
-    if not name or len(name) < 2:
-        await send_text(phone_id, token, to, "Por favor escribe tu nombre para la reserva.")
-        return
-
-    data["customer_name"] = name
-    _set_state(club_id, to, "confirming", data)
-    await _send_confirmation(phone_id, token, to, data)
-
-
-# ─────────────────────────────────────────────────────
 # CONFIRMATION
 # ─────────────────────────────────────────────────────
 
@@ -432,14 +428,26 @@ async def _send_confirmation(phone_id, token, to, data):
     price = data["price_cents"] / 100
     duration = data.get("duration", 90)
     customer_name = data.get("customer_name", "")
+    customer_phone = data.get("customer_phone", to)
+
+    # Format date nicely
+    try:
+        d = date.fromisoformat(data["date"])
+        date_label = f"{DAY_NAMES[d.weekday()]} {d.day}/{d.month}/{d.year}"
+    except (ValueError, KeyError):
+        date_label = data["date"]
+
+    # Format phone for display (e.g. 521234567890 → +52 1234567890)
+    phone_display = f"+{customer_phone[:2]} {customer_phone[2:]}" if len(customer_phone) > 5 else customer_phone
 
     body = (
         f"📋 *Resumen de tu reserva:*\n\n"
-        f"👤 Nombre: *{customer_name}*\n"
-        f"📅 Fecha: *{data['date']}*\n"
-        f"🕐 Horario: *{data['start_time']}* ({duration}min)\n"
-        f"🎾 Cancha: *{data['court_name']}*\n"
-        f"💰 Precio: *${price:.0f} MXN*\n\n"
+        f"👤 {customer_name}\n"
+        f"📱 {phone_display}\n"
+        f"📅 {date_label}\n"
+        f"🕐 {data['start_time']} ({duration}min)\n"
+        f"🎾 {data['court_name']}\n"
+        f"💰 *${price:.0f} MXN*\n\n"
         f"¿Confirmas la reserva?"
     )
 
@@ -496,23 +504,32 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
 
     # ── PLAYTOMIC MODE ──
     if USE_PLAYTOMIC and data.get("resource_id"):
+        customer_name = data.get("customer_name", "")
+        customer_phone = data.get("customer_phone", to)
+
         result = await playtomic.create_booking(
             resource_id=data["resource_id"],
             start_time=data.get("start_iso", ""),
             duration=data.get("duration", 90),
-            customer_name=data.get("customer_name", ""),
-            customer_phone=to,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
         )
 
         _set_state(club_id, to, "idle", {})
         price = data["price_cents"] / 100
         method_labels = {"cash": "Efectivo en club", "transfer": "Transferencia", "card": "Tarjeta"}
 
+        # Format date nicely
+        try:
+            d = date.fromisoformat(data["date"])
+            date_label = f"{DAY_NAMES[d.weekday()]} {d.day}/{d.month}/{d.year}"
+        except (ValueError, KeyError):
+            date_label = data["date"]
+
         if result.get("success"):
-            # Booking created in Playtomic!
             confirmation_msg = (
                 f"✅ *¡Reserva confirmada!*\n\n"
-                f"📅 {data['date']}\n"
+                f"📅 {date_label}\n"
                 f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
                 f"🎾 {data['court_name']}\n"
                 f"💰 ${price:.0f} MXN\n"
@@ -529,11 +546,10 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
                 )
             confirmation_msg += "\n¡Nos vemos en la cancha! 🎾"
         else:
-            # Playtomic booking failed — notify club owner to do it manually
             logger.warning(f"Playtomic booking failed: {result.get('error')}")
             confirmation_msg = (
                 f"✅ *¡Reserva recibida!*\n\n"
-                f"📅 {data['date']}\n"
+                f"📅 {date_label}\n"
                 f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
                 f"🎾 {data['court_name']}\n"
                 f"💰 ${price:.0f} MXN\n"
@@ -545,14 +561,14 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
 
         # Notify club owner
         if CLUB_NOTIFY_PHONE:
-            customer_name = data.get("customer_name", "Sin nombre")
+            display_name = customer_name or "Sin nombre"
             status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
             try:
                 await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
                     f"🔔 *Nueva reserva por WhatsApp*\n\n"
-                    f"👤 Cliente: *{customer_name}*\n"
-                    f"📱 Tel: {to}\n"
-                    f"📅 {data['date']} a las {data['start_time']}\n"
+                    f"👤 {display_name}\n"
+                    f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"
+                    f"📅 {date_label} a las {data['start_time']}\n"
                     f"🎾 {data['court_name']}\n"
                     f"💰 ${price:.0f} MXN — {method_labels.get(method, method)}\n\n"
                     f"{status}"
