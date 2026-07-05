@@ -483,6 +483,76 @@ class PlaytomicClient:
             logger.error(f"Booking exception: {e}")
             return {"error": f"Error de conexión: {e}"}
 
+    # ─── LIST MATCHES (for admin/cleanup) ───
+    async def list_matches(self, date_str: str) -> list:
+        """List all matches/bookings for a date. Requires tenant auth."""
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return []
+
+        # Query UTC range for full local day
+        offset_h = abs(CLUB_UTC_OFFSET)
+        target_date = date.fromisoformat(date_str)
+        next_day = (target_date + timedelta(days=1)).isoformat()
+
+        try:
+            r = await self.client.get(
+                f"{PLAYTOMIC_API}/v1/matches",
+                headers={"Authorization": f"Bearer {self.tenant_token}"},
+                params={
+                    "tenant_id": TENANT_ID,
+                    "sport_id": "PADEL",
+                    "start_date_min": f"{date_str}T{offset_h:02d}:00:00",
+                    "start_date_max": f"{next_day}T{offset_h:02d}:00:00",
+                },
+            )
+            logger.info(f"List matches response: {r.status_code} {r.text[:1000]}")
+            if r.status_code == 200:
+                matches = r.json()
+                if isinstance(matches, list):
+                    return matches
+                elif isinstance(matches, dict):
+                    return matches.get("matches", matches.get("results", [matches]))
+            return []
+        except Exception as e:
+            logger.error(f"List matches error: {e}")
+            return []
+
+    async def cancel_match(self, match_id: str) -> dict:
+        """Cancel/delete a match by ID. Requires tenant auth."""
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return {"error": "No tenant token"}
+
+        headers = {"Authorization": f"Bearer {self.tenant_token}"}
+
+        try:
+            # Try DELETE first
+            r = await self.client.delete(
+                f"{PLAYTOMIC_API}/v1/matches/{match_id}",
+                headers=headers,
+            )
+            logger.info(f"Cancel match {match_id}: {r.status_code} {r.text[:300]}")
+
+            if r.status_code in (200, 204):
+                return {"success": True, "match_id": match_id}
+
+            # If DELETE doesn't work, try PATCH with cancellation
+            r2 = await self.client.patch(
+                f"{PLAYTOMIC_API}/v1/matches/{match_id}",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"status": "CANCELLED"},
+            )
+            logger.info(f"Cancel (PATCH) match {match_id}: {r2.status_code} {r2.text[:300]}")
+
+            if r2.status_code in (200, 204):
+                return {"success": True, "match_id": match_id}
+
+            return {"error": f"Cancel failed: DELETE={r.status_code}, PATCH={r2.status_code}"}
+        except Exception as e:
+            logger.error(f"Cancel match error: {e}")
+            return {"error": str(e)}
+
     # ─── TENANT INFO ───
     async def get_tenant_info(self) -> dict:
         """Get club info from Playtomic."""

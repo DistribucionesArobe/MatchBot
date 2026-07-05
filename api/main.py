@@ -383,6 +383,40 @@ async def api_get_stats(club_id: int):
 
 
 # ─────────────────────────────────────────────────────
+# ADMIN API — Playtomic (list/cancel matches)
+# ─────────────────────────────────────────────────────
+
+from api.playtomic_client import playtomic
+
+@app.get("/api/playtomic/matches")
+async def api_playtomic_matches(date: str = Query(..., description="Date YYYY-MM-DD")):
+    """List Playtomic matches for a date (admin)."""
+    matches = await playtomic.list_matches(date)
+    # Summarize for easy reading
+    summary = []
+    for m in matches:
+        summary.append({
+            "match_id": m.get("match_id", ""),
+            "resource_id": m.get("resource_id", ""),
+            "start": m.get("start_date", ""),
+            "end": m.get("end_date", ""),
+            "status": m.get("status", ""),
+            "teams": m.get("teams", []),
+            "raw_keys": list(m.keys()),
+        })
+    return {"count": len(matches), "matches": summary, "raw": matches}
+
+
+@app.delete("/api/playtomic/matches/{match_id}")
+async def api_playtomic_cancel(match_id: str):
+    """Cancel a Playtomic match by ID (admin)."""
+    result = await playtomic.cancel_match(match_id)
+    if result.get("success"):
+        return {"status": "cancelled", "match_id": match_id}
+    raise HTTPException(400, result.get("error", "Cancel failed"))
+
+
+# ─────────────────────────────────────────────────────
 # Health check
 # ─────────────────────────────────────────────────────
 
