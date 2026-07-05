@@ -23,6 +23,7 @@ from api.bookings import (
     get_bookings_for_date, get_customer_bookings, BookingError
 )
 from whatsapp.booking_flow import handle_message
+from api.playtomic_client import playtomic
 
 # ─── Logging ───
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -385,8 +386,6 @@ async def api_get_stats(club_id: int):
 # ─────────────────────────────────────────────────────
 # ADMIN API — Playtomic (list/cancel matches)
 # ─────────────────────────────────────────────────────
-
-from api.playtomic_client import playtomic
 
 @app.get("/api/playtomic/matches")
 async def api_playtomic_matches(date: str = Query(..., description="Date YYYY-MM-DD")):
