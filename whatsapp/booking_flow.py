@@ -488,21 +488,8 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
         price = data["price_cents"] / 100
         method_labels = {"cash": "Efectivo en club", "transfer": "Transferencia", "card": "Tarjeta"}
 
-        if result.get("error"):
-            # Booking on Playtomic failed — still notify and log
-            logger.warning(f"Playtomic booking failed: {result['error']}")
-            confirmation_msg = (
-                f"✅ *¡Reserva registrada!*\n\n"
-                f"📅 {data['date']}\n"
-                f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
-                f"🎾 {data['court_name']}\n"
-                f"💰 ${price:.0f} MXN\n"
-                f"💳 {method_labels.get(method, method)}\n\n"
-                f"⚠️ La reserva se confirmará manualmente.\n"
-                f"Te avisaremos cuando esté lista.\n\n"
-                f"¡Nos vemos en la cancha! 🎾"
-            )
-        else:
+        if result.get("success"):
+            # Booking created in Playtomic!
             confirmation_msg = (
                 f"✅ *¡Reserva confirmada!*\n\n"
                 f"📅 {data['date']}\n"
@@ -520,27 +507,34 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
                     "CLABE: [CONFIGURAR]\n"
                     "Envía tu comprobante por este chat.\n"
                 )
-            elif method == "card":
-                confirmation_msg += "💳 Te enviaremos el link de pago en breve.\n"
             confirmation_msg += "\n¡Nos vemos en la cancha! 🎾"
+        else:
+            # Playtomic booking failed — notify club owner to do it manually
+            logger.warning(f"Playtomic booking failed: {result.get('error')}")
+            confirmation_msg = (
+                f"✅ *¡Reserva recibida!*\n\n"
+                f"📅 {data['date']}\n"
+                f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
+                f"🎾 {data['court_name']}\n"
+                f"💰 ${price:.0f} MXN\n"
+                f"💳 {method_labels.get(method, method)}\n\n"
+                f"El club confirmará tu reserva en breve. ¡Nos vemos en la cancha! 🎾"
+            )
 
         await send_text(phone_id, token, to, confirmation_msg)
 
         # Notify club owner
         if CLUB_NOTIFY_PHONE:
-            notify_msg = (
-                f"🔔 *Nueva reserva por WhatsApp*\n\n"
-                f"👤 Cliente: {to}\n"
-                f"📅 {data['date']} a las {data['start_time']}\n"
-                f"🎾 {data['court_name']}\n"
-                f"💰 ${price:.0f} MXN — {method_labels.get(method, method)}\n"
-            )
-            if result.get("error"):
-                notify_msg += f"\n⚠️ No se pudo registrar en Playtomic: {result['error']}\nFavor de registrarla manualmente."
-            else:
-                notify_msg += "\n✅ Registrada en Playtomic automáticamente."
+            status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
             try:
-                await send_text(phone_id, token, CLUB_NOTIFY_PHONE, notify_msg)
+                await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                    f"🔔 *Nueva reserva por WhatsApp*\n\n"
+                    f"👤 Cliente: {to}\n"
+                    f"📅 {data['date']} a las {data['start_time']}\n"
+                    f"🎾 {data['court_name']}\n"
+                    f"💰 ${price:.0f} MXN — {method_labels.get(method, method)}\n\n"
+                    f"{status}"
+                )
             except Exception as e:
                 logger.error(f"Failed to notify club: {e}")
 

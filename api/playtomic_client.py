@@ -172,7 +172,7 @@ class PlaytomicClient:
 
         return "\n".join(lines)
 
-    # ─── BOOKING (requires auth) ───
+    # ─── BOOKING via Payment Intents (requires auth) ───
     async def create_booking(
         self,
         resource_id: str,
@@ -182,51 +182,104 @@ class PlaytomicClient:
         customer_phone: str = "",
     ) -> dict:
         """
-        Create a booking on Playtomic.
-        resource_id: court UUID from availability
-        start_time: ISO format datetime string
-        duration: minutes (60, 90, 120)
-        Returns dict with booking info or error.
+        Create a booking on Playtomic using the payment intent flow:
+        1. POST /v1/payment_intents  (create cart)
+        2. PATCH /v1/payment_intents/{id}  (select payment method)
+        3. POST /v1/payment_intents/{id}/confirmation  (confirm booking)
         """
         await self.ensure_auth()
         if not self.token:
             return {"error": "No se pudo autenticar con Playtomic"}
 
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+
         try:
-            # Try the known booking endpoint
+            # Step 1: Create payment intent
+            intent_payload = {
+                "allowed_payment_method_types": ["OFFER"],
+                "user_id": self.user_id,
+                "cart": {
+                    "requested_item": {
+                        "cart_item_type": "MATCH",
+                        "cart_item_voucher_id": None,
+                        "cart_item_data": {
+                            "supports_split_payment": False,
+                            "number_of_players": 4,
+                            "tenant_id": TENANT_ID,
+                            "resource_id": resource_id,
+                            "start": start_time,
+                            "duration": duration,
+                            "match_registrations": [
+                                {"user_id": self.user_id, "pay_now": False}
+                            ],
+                        }
+                    }
+                }
+            }
+
+            logger.info(f"Creating payment intent for {resource_id} at {start_time}")
             r = await self.client.post(
-                f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}/bookings",
-                headers={
-                    "Authorization": f"Bearer {self.token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "resource_id": resource_id,
-                    "start_time": start_time,
-                    "duration": duration,
-                    "sport_id": "PADEL",
-                    "customer": {
-                        "name": customer_name,
-                        "phone": customer_phone,
-                    },
-                },
+                f"{PLAYTOMIC_API}/v1/payment_intents",
+                headers=headers,
+                json=intent_payload,
             )
 
-            if r.status_code in (200, 201):
-                data = r.json()
-                logger.info(f"Booking created: {data.get('id', 'ok')}")
-                return {"success": True, "booking": data}
-            elif r.status_code == 401:
-                # Token expired, retry
+            if r.status_code == 401:
                 logger.info("Token expired, re-authenticating...")
                 await self.login()
                 return await self.create_booking(
                     resource_id, start_time, duration,
                     customer_name, customer_phone,
                 )
+
+            if r.status_code not in (200, 201):
+                logger.error(f"Payment intent error: {r.status_code} {r.text}")
+                return {"error": f"Error al crear reserva (paso 1): {r.status_code} - {r.text}"}
+
+            intent_data = r.json()
+            intent_id = intent_data.get("payment_intent_id", "")
+            available_methods = intent_data.get("available_payment_methods", [])
+            logger.info(f"Payment intent created: {intent_id}, methods: {available_methods}")
+
+            if not intent_id:
+                return {"error": "No se recibió ID de reserva"}
+
+            # Step 2: Select payment method (pick first available, prefer free/offer)
+            selected_method = "OFFER"
+            if available_methods:
+                # Try to find a cash/free method
+                for m in available_methods:
+                    method_type = m if isinstance(m, str) else m.get("payment_method_type", "")
+                    if method_type in ("OFFER", "CASH", "FREE"):
+                        selected_method = method_type
+                        break
+                else:
+                    selected_method = available_methods[0] if isinstance(available_methods[0], str) else available_methods[0].get("payment_method_type", "OFFER")
+
+            r2 = await self.client.patch(
+                f"{PLAYTOMIC_API}/v1/payment_intents/{intent_id}",
+                headers=headers,
+                json={"selected_payment_method": selected_method},
+            )
+            logger.info(f"Payment method update: {r2.status_code}")
+
+            # Step 3: Confirm
+            r3 = await self.client.post(
+                f"{PLAYTOMIC_API}/v1/payment_intents/{intent_id}/confirmation",
+                headers=headers,
+            )
+
+            if r3.status_code in (200, 201):
+                data = r3.json()
+                logger.info(f"Booking confirmed via payment intent: {intent_id}")
+                return {"success": True, "booking": data, "payment_intent_id": intent_id}
             else:
-                logger.error(f"Booking error: {r.status_code} {r.text}")
-                return {"error": f"Error al reservar: {r.status_code}"}
+                logger.error(f"Confirmation error: {r3.status_code} {r3.text}")
+                return {"error": f"Error al confirmar reserva: {r3.status_code} - {r3.text}"}
+
         except Exception as e:
             logger.error(f"Booking exception: {e}")
             return {"error": f"Error de conexión: {e}"}
