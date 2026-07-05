@@ -16,6 +16,8 @@ import httpx
 import os
 import re
 import logging
+import uuid
+import time
 from datetime import datetime, date, timedelta
 from typing import Optional
 
@@ -438,18 +440,31 @@ class PlaytomicClient:
             end_time = start_time  # fallback
 
         # Build player entry for Team A
-        player = {}
-        if customer_name:
-            player["name"] = customer_name
+        # Playtomic Manager requires merchant_player_id in guest format
+        # to properly display the player name in the booking UI.
+        timestamp_ms = int(time.time() * 1000)
+        random_hex = uuid.uuid4().hex[:8]
+        guest_id = f"guest:{TENANT_ID}:{timestamp_ms}:{random_hex}"
+
+        # Build display name: include phone for easy identification
+        display_name = customer_name or "WhatsApp"
         if customer_phone:
-            # Format phone: strip leading country code formatting if needed
-            phone = customer_phone.lstrip("+").strip()
-            player["phone"] = phone
+            phone_clean = customer_phone.lstrip("+").strip()
+            display_name = f"{display_name} ({phone_clean[-10:]})"
+
+        player = {
+            "name": display_name,
+            "merchant_player_id": guest_id,
+            "user_id": None,
+            "contact_id": None,
+            "email": None,
+            "phone": customer_phone.lstrip("+").strip() if customer_phone else None,
+        }
 
         teams = [
             {
                 "team_id": "0",
-                "players": [player] if player else [],
+                "players": [player],
             },
             {
                 "team_id": "1",
