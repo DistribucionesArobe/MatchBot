@@ -57,6 +57,14 @@ async def startup():
         logger.info("🎾 MatchBot started — DB connected")
     except Exception as e:
         logger.warning(f"⚠️ DB not available: {e} — running without database")
+
+    # Pre-load Playtomic court names at startup
+    try:
+        await playtomic._ensure_resource_names()
+        logger.info(f"Playtomic court names loaded: {list(playtomic._resource_names.values())}")
+    except Exception as e:
+        logger.warning(f"Could not pre-load court names: {e}")
+
     logger.info("🎾 MatchBot started — matchbot.live")
 
 
@@ -388,22 +396,54 @@ async def api_get_stats(club_id: int):
 # ─────────────────────────────────────────────────────
 
 @app.get("/api/playtomic/matches")
-async def api_playtomic_matches(date: str = Query(..., description="Date YYYY-MM-DD")):
-    """List Playtomic matches for a date (admin)."""
-    matches = await playtomic.list_matches(date)
+async def api_playtomic_matches(
+    date: str = Query(None, description="Date YYYY-MM-DD (optional, shows all if omitted)"),
+):
+    """List Playtomic matches. Optionally filter by local date."""
+    if date:
+        matches = await playtomic.list_matches(date)
+    else:
+        matches = await playtomic.list_all_matches_raw()
+
+    # Load resource names for display
+    await playtomic._ensure_resource_names()
+
     # Summarize for easy reading
     summary = []
     for m in matches:
+        resource_id = m.get("resource_id", "")
+        court_name = playtomic._resource_names.get(resource_id, resource_id[:8])
+        start_utc = m.get("start_date", m.get("start", ""))
+        end_utc = m.get("end_date", m.get("end", ""))
+
+        # Convert to local time for display
+        local_start = ""
+        local_end = ""
+        if start_utc and "T" in start_utc:
+            local_start = playtomic._local_time_str(start_utc.split("T")[1][:5])
+        if end_utc and "T" in end_utc:
+            local_end = playtomic._local_time_str(end_utc.split("T")[1][:5])
+
+        # Extract player info
+        players = []
+        for team in m.get("teams", []):
+            for p in team.get("players", []):
+                name = p.get("name", "")
+                phone = p.get("phone", "")
+                if name or phone:
+                    players.append({"name": name, "phone": phone})
+
         summary.append({
             "match_id": m.get("match_id", ""),
-            "resource_id": m.get("resource_id", ""),
-            "start": m.get("start_date", ""),
-            "end": m.get("end_date", ""),
+            "court": court_name,
+            "resource_id": resource_id,
+            "start_utc": start_utc,
+            "end_utc": end_utc,
+            "local_time": f"{local_start}-{local_end}" if local_start else "",
             "status": m.get("status", ""),
-            "teams": m.get("teams", []),
-            "raw_keys": list(m.keys()),
+            "players": players,
         })
-    return {"count": len(matches), "matches": summary, "raw": matches}
+    return {"count": len(matches), "matches": summary}
 
 
 @app.delete("/api/playtomic/matches/{match_id}")
@@ -415,9 +455,27 @@ async def api_playtomic_cancel(match_id: str):
     raise HTTPException(400, result.get("error", "Cancel failed"))
 
 
+@app.post("/api/playtomic/cancel-bulk")
+async def api_playtomic_cancel_bulk(request: Request):
+    """Cancel multiple Playtomic matches at once (admin)."""
+    data = await request.json()
+    match_ids = data.get("match_ids", [])
+    results = []
+    for mid in match_ids:
+        r = await playtomic.cancel_match(mid)
+        results.append({"match_id": mid, **r})
+    return {"results": results}
+
+
 # ─────────────────────────────────────────────────────
 # ADMIN API — Playtomic Diagnostics
 # ─────────────────────────────────────────────────────
+
+@app.get("/api/playtomic/search")
+async def api_playtomic_search(date: str = Query("2026-07-05")):
+    """Search for bookings across multiple Playtomic API endpoints."""
+    return await playtomic.search_bookings(date)
+
 
 @app.get("/api/playtomic/debug")
 async def api_playtomic_debug(date: str = Query("2026-07-05")):

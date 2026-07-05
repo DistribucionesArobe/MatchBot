@@ -511,16 +511,82 @@ class PlaytomicClient:
             return {"error": f"Error de conexión: {e}"}
 
     # ─── LIST MATCHES (for admin/cleanup) ───
-    async def list_matches(self, date_str: str) -> list:
-        """List all matches/bookings for a date. Requires tenant auth."""
+    async def list_matches(self, date_str: str = None) -> list:
+        """List matches/bookings. If date_str given, filter to that local date.
+        Queries ALL matches from Playtomic and filters client-side since
+        the API ignores start_date_min/max parameters.
+        """
         await self.ensure_tenant_auth()
         if not self.tenant_token:
             return []
 
-        # Query UTC range for full local day
-        offset_h = abs(CLUB_UTC_OFFSET)
-        target_date = date.fromisoformat(date_str)
-        next_day = (target_date + timedelta(days=1)).isoformat()
+        all_matches = []
+
+        try:
+            # Query without date filter — API ignores it anyway
+            # Try multiple pages/sort orders to get comprehensive results
+            for sort_param in ["start_date:asc", "start_date:desc"]:
+                r = await self.client.get(
+                    f"{PLAYTOMIC_API}/v1/matches",
+                    headers={"Authorization": f"Bearer {self.tenant_token}"},
+                    params={
+                        "tenant_id": TENANT_ID,
+                        "sport_id": "PADEL",
+                        "sort": sort_param,
+                        "size": 200,
+                    },
+                )
+                logger.info(f"List matches ({sort_param}): {r.status_code}")
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list):
+                        all_matches.extend(data)
+                    elif isinstance(data, dict):
+                        items = data.get("matches", data.get("results", []))
+                        all_matches.extend(items)
+
+            # Deduplicate by match_id
+            seen = set()
+            unique = []
+            for m in all_matches:
+                mid = m.get("match_id", "")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    unique.append(m)
+
+            # Client-side date filter if requested
+            if date_str:
+                offset_h = abs(CLUB_UTC_OFFSET)
+                target = date.fromisoformat(date_str)
+                next_day = target + timedelta(days=1)
+
+                # UTC range for full local day
+                utc_start = datetime(target.year, target.month, target.day, offset_h, 0, 0)
+                utc_end = datetime(next_day.year, next_day.month, next_day.day, offset_h, 0, 0)
+
+                filtered = []
+                for m in unique:
+                    sd = m.get("start_date", m.get("start", ""))
+                    if sd:
+                        try:
+                            match_dt = datetime.fromisoformat(sd.replace("Z", ""))
+                            if utc_start <= match_dt < utc_end:
+                                filtered.append(m)
+                        except (ValueError, TypeError):
+                            pass
+                logger.info(f"Date filter {date_str}: {len(filtered)} of {len(unique)} matches")
+                return filtered
+
+            return unique
+        except Exception as e:
+            logger.error(f"List matches error: {e}")
+            return []
+
+    async def list_all_matches_raw(self) -> list:
+        """List ALL matches without any filter. For finding test bookings."""
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return []
 
         try:
             r = await self.client.get(
@@ -528,22 +594,84 @@ class PlaytomicClient:
                 headers={"Authorization": f"Bearer {self.tenant_token}"},
                 params={
                     "tenant_id": TENANT_ID,
-                    "sport_id": "PADEL",
-                    "start_date_min": f"{date_str}T{offset_h:02d}:00:00",
-                    "start_date_max": f"{next_day}T{offset_h:02d}:00:00",
+                    "size": 500,
                 },
             )
-            logger.info(f"List matches response: {r.status_code} {r.text[:1000]}")
+            logger.info(f"List ALL matches: {r.status_code}")
             if r.status_code == 200:
-                matches = r.json()
-                if isinstance(matches, list):
-                    return matches
-                elif isinstance(matches, dict):
-                    return matches.get("matches", matches.get("results", [matches]))
+                data = r.json()
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict):
+                    return data.get("matches", data.get("results", []))
             return []
         except Exception as e:
-            logger.error(f"List matches error: {e}")
+            logger.error(f"List all matches error: {e}")
             return []
+
+    async def search_bookings(self, date_str: str) -> dict:
+        """Search for bookings using multiple Playtomic API endpoints.
+        Tries /v1/matches, /v1/reservations, and tenant-scoped queries.
+        """
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return {"error": "No auth"}
+
+        headers = {"Authorization": f"Bearer {self.tenant_token}"}
+        results = {}
+
+        offset_h = abs(CLUB_UTC_OFFSET)
+        target = date.fromisoformat(date_str)
+        next_day = (target + timedelta(days=1)).isoformat()
+        utc_start = f"{date_str}T{offset_h:02d}:00:00"
+        utc_end = f"{next_day}T{offset_h:02d}:00:00"
+
+        # Try multiple endpoints and param combinations
+        queries = [
+            ("matches_by_date", f"/v1/matches", {
+                "tenant_id": TENANT_ID,
+                "start_min": utc_start, "start_max": utc_end,
+            }),
+            ("matches_by_start_date", f"/v1/matches", {
+                "tenant_id": TENANT_ID,
+                "start_date_gte": utc_start, "start_date_lte": utc_end,
+            }),
+            ("reservations", f"/v1/tenants/{TENANT_ID}/reservations", {
+                "start_min": utc_start, "start_max": utc_end,
+            }),
+            ("bookings", f"/v1/tenants/{TENANT_ID}/bookings", {
+                "date": date_str,
+            }),
+            ("matches_tenant", f"/v1/tenants/{TENANT_ID}/matches", {
+                "start_min": utc_start, "start_max": utc_end,
+            }),
+            ("calendar", f"/v1/tenants/{TENANT_ID}/calendar", {
+                "date": date_str,
+            }),
+        ]
+
+        for name, endpoint, params in queries:
+            try:
+                r = await self.client.get(
+                    f"{PLAYTOMIC_API}{endpoint}",
+                    headers=headers,
+                    params=params,
+                )
+                status = r.status_code
+                if status == 200:
+                    data = r.json()
+                    if isinstance(data, list):
+                        results[name] = {"status": status, "count": len(data), "sample": str(data[:2])[:500]}
+                    elif isinstance(data, dict):
+                        results[name] = {"status": status, "keys": list(data.keys()), "sample": str(data)[:500]}
+                    else:
+                        results[name] = {"status": status, "type": str(type(data))}
+                else:
+                    results[name] = {"status": status, "error": r.text[:200]}
+            except Exception as e:
+                results[name] = {"error": str(e)}
+
+        return results
 
     async def cancel_match(self, match_id: str) -> dict:
         """Cancel/delete a match by ID. Requires tenant auth."""
