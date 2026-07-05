@@ -6,13 +6,17 @@ Auth flow (reverse-engineered from manager.playtomic.io):
   1. POST /v3/auth/login  → customer access_token + refresh_token
   2. POST /v3/auth/token  → tenant-scoped access_token (needed for bookings)
   3. POST /v1/matches      → creates booking with tenant token
+
+IMPORTANT: Playtomic API returns times in UTC.
+  Cd. Victoria (Tamaulipas) = UTC-6 (CST).
+  We convert UTC→local for display and extend query range to cover full local day.
 """
 
 import httpx
 import os
 import re
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,9 @@ TENANT_ID = os.getenv("PLAYTOMIC_TENANT_ID", "9350708e-5320-4e4c-a264-0f6aedefaf
 PLAYTOMIC_EMAIL = os.getenv("PLAYTOMIC_EMAIL", "")
 PLAYTOMIC_PASSWORD = os.getenv("PLAYTOMIC_PASSWORD", "")
 
+# Club timezone offset from UTC (Cd. Victoria = -6)
+CLUB_UTC_OFFSET = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+
 
 class PlaytomicClient:
     def __init__(self):
@@ -31,6 +38,7 @@ class PlaytomicClient:
         self.refresh_token: Optional[str] = None
         self.user_id: Optional[str] = None
         self.client = httpx.AsyncClient(timeout=15.0)
+        self._resource_names: dict[str, str] = {}  # resource_id → display name cache
 
     # ─── AUTH ───
     async def login(self) -> bool:
@@ -103,39 +111,115 @@ class PlaytomicClient:
         if not self.tenant_token:
             await self.get_tenant_token()
 
+    # ─── RESOURCE NAMES (court names from tenant info) ───
+    async def _ensure_resource_names(self):
+        """Load court/resource names from Playtomic tenant info and cache them."""
+        if self._resource_names:
+            return  # already loaded
+
+        try:
+            r = await self.client.get(f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}")
+            if r.status_code == 200:
+                info = r.json()
+                # Playtomic tenant info includes resources array
+                resources = info.get("resources", [])
+                for res in resources:
+                    rid = res.get("resource_id", res.get("id", ""))
+                    name = res.get("name", "")
+                    if rid and name:
+                        self._resource_names[rid] = name
+                logger.info(f"Loaded {len(self._resource_names)} resource names: {list(self._resource_names.values())}")
+            else:
+                logger.warning(f"Could not load tenant info: {r.status_code}")
+        except Exception as e:
+            logger.warning(f"Could not load resource names: {e}")
+
+    def _get_resource_name(self, resource_id: str, fallback_index: int) -> str:
+        """Get display name for a resource, with fallback."""
+        if resource_id in self._resource_names:
+            return self._resource_names[resource_id]
+        return f"Cancha {fallback_index + 1}"
+
+    # ─── TIMEZONE HELPERS ───
+    @staticmethod
+    def _utc_to_local_hour(utc_hour: int, utc_minute: int = 0) -> tuple[int, int, int]:
+        """Convert UTC hour:minute to local. Returns (local_hour, local_minute, day_offset).
+        day_offset: -1 = previous day, 0 = same day, +1 = next day.
+        """
+        local_h = utc_hour + CLUB_UTC_OFFSET
+        day_offset = 0
+        if local_h < 0:
+            local_h += 24
+            day_offset = -1
+        elif local_h >= 24:
+            local_h -= 24
+            day_offset = 1
+        return local_h, utc_minute, day_offset
+
+    @staticmethod
+    def _local_time_str(utc_time_str: str) -> str:
+        """Convert 'HH:MM' or 'HH:MM:SS' UTC to 'HH:MM' local."""
+        parts = utc_time_str.split(":")
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        local_h, local_m, _ = PlaytomicClient._utc_to_local_hour(h, m)
+        return f"{local_h:02d}:{local_m:02d}"
+
+    @staticmethod
+    def _local_date_for_utc(utc_date_str: str, utc_time_str: str) -> str:
+        """Get the LOCAL date for a UTC datetime, accounting for day shift."""
+        parts = utc_time_str.split(":")
+        h = int(parts[0])
+        _, _, day_offset = PlaytomicClient._utc_to_local_hour(h)
+        d = date.fromisoformat(utc_date_str)
+        if day_offset != 0:
+            d = d + timedelta(days=day_offset)
+        return d.isoformat()
+
     # ─── AVAILABILITY (public, no auth needed) ───
     async def get_availability(self, date_str: str) -> list:
         """
-        Get court availability for a given date.
-        date_str: 'YYYY-MM-DD'
-        Returns list of available slots grouped by court.
+        Get court availability for a given date (local).
+        date_str: 'YYYY-MM-DD' in LOCAL timezone.
+        Returns list of available slots grouped by court, with LOCAL times.
         """
+        # Load court names first
+        await self._ensure_resource_names()
+
+        # Calculate UTC range to cover the full LOCAL day
+        # For UTC-6: local midnight = 06:00 UTC, local 23:59 = next day 05:59 UTC
+        offset_h = abs(CLUB_UTC_OFFSET)
+        target_date = date.fromisoformat(date_str)
+        next_day = (target_date + timedelta(days=1)).isoformat()
+
+        utc_start = f"{date_str}T{offset_h:02d}:00:00"
+        utc_end = f"{next_day}T{offset_h:02d}:00:00"
+
         try:
-            # Use local_start_min/max so Playtomic interprets as club timezone
             params = {
                 "user_id": "me",
                 "sport_id": "PADEL",
                 "tenant_id": TENANT_ID,
                 "local_start_min": f"{date_str}T00:00:00",
                 "local_start_max": f"{date_str}T23:59:59",
+                "start_min": utc_start,
+                "start_max": utc_end,
             }
-            logger.info(f"Querying availability: {params}")
+            logger.info(f"Querying availability: date={date_str}, UTC range={utc_start} to {utc_end}")
             r = await self.client.get(
                 f"{PLAYTOMIC_API}/v1/availability",
                 params=params,
             )
             if r.status_code == 200:
                 data = r.json()
-                # Log raw response summary for debugging
                 if isinstance(data, list):
-                    logger.info(f"Availability response: {len(data)} resources")
-                    for res in data:
-                        slots = res.get("slots", [])
-                        name = res.get("resource_name", res.get("name", res.get("resource_id", "?")))
-                        logger.info(f"  {name}: {len(slots)} slots")
+                    logger.info(f"Availability: {len(data)} items returned")
+                    if data:
+                        logger.info(f"Sample keys: {list(data[0].keys())}")
                 else:
-                    logger.info(f"Availability raw (not list): {str(data)[:500]}")
-                return self._parse_availability(data)
+                    logger.warning(f"Unexpected response type: {type(data)}")
+                    logger.warning(f"Response: {str(data)[:500]}")
+                return self._parse_availability(data, date_str)
             else:
                 logger.error(f"Availability error: {r.status_code} {r.text[:500]}")
                 return []
@@ -143,79 +227,68 @@ class PlaytomicClient:
             logger.error(f"Availability error: {e}")
             return []
 
-    def _parse_availability(self, data: list) -> list:
+    def _parse_availability(self, data: list, target_local_date: str) -> list:
         """Parse raw Playtomic availability response.
-        Handles multiple response formats from Playtomic API:
-
-        Format A (slots array):
-        [{"resource_id": "uuid", "start_date": "2026-07-05",
-          "slots": [{"start_time": "21:00:00", "duration": 90, "price": "300 MXN"}]}]
-
-        Format B (flat per-slot):
-        [{"resource_id": "uuid", "resource_name": "Cancha 1",
-          "start_date": "2026-07-05", "start_time": "21:00:00",
-          "duration": 90, "price": 300}]
+        Converts UTC times to local and filters to target date.
         """
         if not data or not isinstance(data, list):
-            logger.warning(f"Unexpected availability data type: {type(data)}")
             return []
 
-        # Detect format: if first item has "slots" array, it's Format A
-        # If first item has "start_time" at top level, it's Format B (flat)
         sample = data[0] if data else {}
 
+        # Detect format
         if "slots" in sample:
-            return self._parse_format_slots(data)
+            return self._parse_format_slots(data, target_local_date)
         elif "start_time" in sample or "start" in sample:
-            return self._parse_format_flat(data)
+            return self._parse_format_flat(data, target_local_date)
         else:
-            # Unknown format — log it
-            logger.warning(f"Unknown availability format. Keys: {list(sample.keys())}")
-            logger.warning(f"Sample entry: {str(sample)[:500]}")
-            # Try Format A as fallback
-            return self._parse_format_slots(data)
+            logger.warning(f"Unknown format. Keys: {list(sample.keys())}")
+            logger.warning(f"Sample: {str(sample)[:500]}")
+            return self._parse_format_slots(data, target_local_date)
 
-    def _parse_format_slots(self, data: list) -> list:
-        """Parse Format A: each resource has a 'slots' array."""
-        results = []
+    def _parse_format_slots(self, data: list, target_local_date: str) -> list:
+        """Parse Format A: each resource has a 'slots' array.
+        Merges slots for the same resource_id (e.g. when query spans 2 UTC days).
+        """
+        by_resource: dict[str, dict] = {}  # resource_id → {name, slots}
+
         for i, resource in enumerate(data):
             resource_id = resource.get("resource_id", "")
             resource_name = (
-                resource.get("resource_name")
+                self._resource_names.get(resource_id)
+                or resource.get("resource_name")
                 or resource.get("name")
                 or f"Cancha {i + 1}"
             )
-            start_date = resource.get("start_date", "")
+            utc_date = resource.get("start_date", "")
 
-            slots = []
             for slot in resource.get("slots", []):
-                parsed = self._parse_slot(slot, resource_id, start_date)
+                parsed = self._parse_slot(slot, resource_id, utc_date, target_local_date)
                 if parsed:
-                    slots.append(parsed)
+                    if resource_id not in by_resource:
+                        by_resource[resource_id] = {
+                            "resource_id": resource_id,
+                            "name": resource_name,
+                            "slots": [],
+                        }
+                    by_resource[resource_id]["slots"].append(parsed)
 
-            if slots:
-                results.append({
-                    "resource_id": resource_id,
-                    "name": resource_name,
-                    "slots": slots,
-                })
+        return list(by_resource.values())
 
-        return results
-
-    def _parse_format_flat(self, data: list) -> list:
+    def _parse_format_flat(self, data: list, target_local_date: str) -> list:
         """Parse Format B: flat list where each item is one slot."""
-        # Group by resource_id
         by_resource = {}
         for item in data:
             resource_id = item.get("resource_id", "")
             resource_name = (
-                item.get("resource_name")
+                self._resource_names.get(resource_id)
+                or item.get("resource_name")
                 or item.get("name")
                 or ""
             )
-            start_date = item.get("start_date", item.get("date", ""))
+            utc_date = item.get("start_date", item.get("date", ""))
 
-            parsed = self._parse_slot(item, resource_id, start_date)
+            parsed = self._parse_slot(item, resource_id, utc_date, target_local_date)
             if parsed:
                 if resource_id not in by_resource:
                     by_resource[resource_id] = {
@@ -227,20 +300,21 @@ class PlaytomicClient:
 
         return list(by_resource.values())
 
-    def _parse_slot(self, slot: dict, resource_id: str, start_date: str) -> dict | None:
-        """Parse a single slot from any format."""
-        raw_time = (
-            slot.get("start_time")
-            or slot.get("start", "")
-        )
+    def _parse_slot(self, slot: dict, resource_id: str, utc_date: str, target_local_date: str) -> dict | None:
+        """Parse a single slot. Converts UTC→local. Filters by target local date."""
+        raw_time = slot.get("start_time") or slot.get("start", "")
         if not raw_time:
             return None
 
-        # If raw_time is a full ISO datetime, extract date and time
+        # If raw_time is a full ISO datetime, split date and time
         if "T" in raw_time:
             parts = raw_time.split("T")
-            start_date = parts[0]
+            utc_date = parts[0]
             raw_time = parts[1]
+
+        # Ensure we have a UTC date
+        if not utc_date:
+            return None
 
         # Duration → int
         try:
@@ -248,7 +322,7 @@ class PlaytomicClient:
         except (ValueError, TypeError):
             duration = 90
 
-        # Price: "300 MXN" → 300.0, or 300 → 300.0, or {"amount":300}
+        # Price
         raw_price = slot.get("price", 0)
         if isinstance(raw_price, dict):
             price = float(raw_price.get("amount", 0))
@@ -261,15 +335,24 @@ class PlaytomicClient:
             except (ValueError, TypeError):
                 price = 0.0
 
-        # Display time: "21:00:00" → "21:00"
-        time_str = raw_time[:5] if len(raw_time) >= 5 else raw_time
+        # UTC time for display
+        utc_time_short = raw_time[:5] if len(raw_time) >= 5 else raw_time
+        utc_time_full = raw_time[:8] if len(raw_time) >= 8 else raw_time
 
-        # Full ISO datetime for booking: "2026-07-05T21:00:00"
-        start_iso = f"{start_date}T{raw_time}" if start_date else raw_time
+        # Convert UTC → local
+        local_time = self._local_time_str(utc_time_short)
+        local_date = self._local_date_for_utc(utc_date, utc_time_short)
+
+        # Filter: only keep slots that fall on the requested LOCAL date
+        if local_date != target_local_date:
+            return None
+
+        # Full ISO datetime in UTC — used for Playtomic booking API
+        start_iso_utc = f"{utc_date}T{utc_time_full}"
 
         return {
-            "start": start_iso,
-            "time": time_str,
+            "start": start_iso_utc,       # UTC for Playtomic booking API
+            "time": local_time,            # LOCAL for display to user
             "duration": duration,
             "price": price,
             "resource_id": resource_id,
@@ -282,7 +365,7 @@ class PlaytomicClient:
 
         lines = [f"🎾 *Canchas disponibles — {date_str}*\n"]
 
-        for i, court in enumerate(availability):
+        for court in availability:
             lines.append(f"*{court['name']}*")
             slot_texts = []
             for slot in court["slots"]:
@@ -308,7 +391,7 @@ class PlaytomicClient:
         """
         Create a booking on Playtomic as the club manager.
         Uses POST /v1/matches with tenant-scoped token.
-        This is the same API the manager.playtomic.io dashboard uses.
+        start_time should be in UTC ISO format (as returned by availability).
         """
         await self.ensure_tenant_auth()
         if not self.tenant_token:
@@ -332,8 +415,9 @@ class PlaytomicClient:
         if customer_name:
             player["name"] = customer_name
         if customer_phone:
-            # Playtomic expects phone without country code prefix in some cases
-            player["phone"] = customer_phone
+            # Format phone: strip leading country code formatting if needed
+            phone = customer_phone.lstrip("+").strip()
+            player["phone"] = phone
 
         teams = [
             {
@@ -362,7 +446,7 @@ class PlaytomicClient:
         }
 
         try:
-            logger.info(f"Creating Playtomic booking: {resource_id} at {start_time} for {customer_name}")
+            logger.info(f"Creating booking: {resource_id} at {start_time} for '{customer_name}' phone={customer_phone}")
             r = await self.client.post(
                 f"{PLAYTOMIC_API}/v1/matches",
                 headers=headers,
@@ -370,7 +454,6 @@ class PlaytomicClient:
             )
 
             if r.status_code == 401:
-                # Tenant token expired — refresh and retry once
                 logger.info("Tenant token expired, refreshing...")
                 self.tenant_token = None
                 await self.login()
@@ -385,12 +468,12 @@ class PlaytomicClient:
                 else:
                     return {"error": "No se pudo renovar el token de manager"}
 
-            logger.info(f"Create booking response: {r.status_code} {r.text[:500]}")
+            logger.info(f"Booking response: {r.status_code} {r.text[:500]}")
 
             if r.status_code in (200, 201):
                 match_data = r.json()
                 match_id = match_data.get("match_id", "")
-                logger.info(f"Booking created OK — match_id: {match_id}")
+                logger.info(f"Booking OK — match_id: {match_id}")
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
