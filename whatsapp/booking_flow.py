@@ -98,6 +98,8 @@ async def handle_message(club: dict, wa_phone: str, message: dict):
         await _handle_time_chosen(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "choosing_court":
         await _handle_court_chosen(phone_id, token, wa_phone, club_id, text, button_id, data)
+    elif state == "asking_name":
+        await _handle_name_input(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "confirming":
         await _handle_confirm(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "choosing_payment":
@@ -296,8 +298,8 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
             data["price_cents"] = int(c["price"] * 100)
             data["duration"] = c["duration"]
             data["start_iso"] = c["start_iso"]
-            _set_state(club_id, to, "confirming", data)
-            await _send_confirmation(phone_id, token, to, data)
+            _set_state(club_id, to, "asking_name", data)
+            await send_text(phone_id, token, to, "👤 ¿A nombre de quién es la reserva?")
             return
 
         rows = []
@@ -375,8 +377,8 @@ async def _handle_court_chosen(phone_id, token, to, club_id, text, button_id, da
             data["price_cents"] = int(c["price"] * 100)
             data["duration"] = c["duration"]
             data["start_iso"] = c["start_iso"]
-            _set_state(club_id, to, "confirming", data)
-            await _send_confirmation(phone_id, token, to, data)
+            _set_state(club_id, to, "asking_name", data)
+            await send_text(phone_id, token, to, "👤 ¿A nombre de quién es la reserva?")
             return
 
     # ── INTERNAL DB MODE (original) ──
@@ -407,15 +409,33 @@ async def _handle_court_chosen(phone_id, token, to, club_id, text, button_id, da
 
 
 # ─────────────────────────────────────────────────────
+# NAME INPUT → then confirm
+# ─────────────────────────────────────────────────────
+
+async def _handle_name_input(phone_id, token, to, club_id, text, button_id, data):
+    """Capture customer name, then show confirmation."""
+    name = (text or "").strip()
+    if not name or len(name) < 2:
+        await send_text(phone_id, token, to, "Por favor escribe tu nombre para la reserva.")
+        return
+
+    data["customer_name"] = name
+    _set_state(club_id, to, "confirming", data)
+    await _send_confirmation(phone_id, token, to, data)
+
+
+# ─────────────────────────────────────────────────────
 # CONFIRMATION
 # ─────────────────────────────────────────────────────
 
 async def _send_confirmation(phone_id, token, to, data):
     price = data["price_cents"] / 100
     duration = data.get("duration", 90)
+    customer_name = data.get("customer_name", "")
 
     body = (
         f"📋 *Resumen de tu reserva:*\n\n"
+        f"👤 Nombre: *{customer_name}*\n"
         f"📅 Fecha: *{data['date']}*\n"
         f"🕐 Horario: *{data['start_time']}* ({duration}min)\n"
         f"🎾 Cancha: *{data['court_name']}*\n"
@@ -525,11 +545,13 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
 
         # Notify club owner
         if CLUB_NOTIFY_PHONE:
+            customer_name = data.get("customer_name", "Sin nombre")
             status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
             try:
                 await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
                     f"🔔 *Nueva reserva por WhatsApp*\n\n"
-                    f"👤 Cliente: {to}\n"
+                    f"👤 Cliente: *{customer_name}*\n"
+                    f"📱 Tel: {to}\n"
                     f"📅 {data['date']} a las {data['start_time']}\n"
                     f"🎾 {data['court_name']}\n"
                     f"💰 ${price:.0f} MXN — {method_labels.get(method, method)}\n\n"
