@@ -88,40 +88,54 @@ class PlaytomicClient:
             return []
 
     def _parse_availability(self, data: list) -> list:
-        """Parse raw availability into friendly format."""
+        """Parse raw Playtomic availability response.
+        Actual format from API:
+        [{"resource_id": "uuid", "start_date": "2026-07-05",
+          "slots": [{"start_time": "21:00:00", "duration": 90, "price": "300 MXN"}]}]
+        """
+        import re
         results = []
-        for resource in data:
+        for i, resource in enumerate(data):
             resource_id = resource.get("resource_id", "")
-            resource_name = resource.get("resource_name") or resource.get("name") or f"Cancha {resource_id}"
+            resource_name = (
+                resource.get("resource_name")
+                or resource.get("name")
+                or f"Cancha {i + 1}"
+            )
+            start_date = resource.get("start_date", "")
 
             slots = []
             for slot in resource.get("slots", []):
-                start = slot.get("start_time") or slot.get("start", "")
+                raw_time = slot.get("start_time") or slot.get("start", "")
+
+                # Duration → int
                 try:
                     duration = int(slot.get("duration", 90))
                 except (ValueError, TypeError):
                     duration = 90
-                price = slot.get("price", 0)
 
-                # Parse time for display
-                # Normalize price to float
-                if isinstance(price, dict):
-                    price = float(price.get("amount", 0))
+                # Price: "300 MXN" → 300.0, or 300 → 300.0, or {"amount":300}
+                raw_price = slot.get("price", 0)
+                if isinstance(raw_price, dict):
+                    price = float(raw_price.get("amount", 0))
+                elif isinstance(raw_price, str):
+                    match = re.search(r'[\d.]+', raw_price)
+                    price = float(match.group()) if match else 0.0
                 else:
                     try:
-                        price = float(price)
+                        price = float(raw_price)
                     except (ValueError, TypeError):
                         price = 0.0
 
-                if start:
-                    try:
-                        t = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                        time_str = t.strftime("%H:%M")
-                    except:
-                        time_str = start
+                # Display time: "21:00:00" → "21:00"
+                time_str = raw_time[:5] if len(raw_time) >= 5 else raw_time
 
+                # Full ISO datetime for booking: "2026-07-05T21:00:00"
+                start_iso = f"{start_date}T{raw_time}" if start_date else raw_time
+
+                if raw_time:
                     slots.append({
-                        "start": start,
+                        "start": start_iso,
                         "time": time_str,
                         "duration": duration,
                         "price": price,
