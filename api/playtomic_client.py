@@ -419,7 +419,11 @@ class PlaytomicClient:
     ) -> dict:
         """
         Create a booking on Playtomic as the club manager.
-        Uses POST /v1/matches with tenant-scoped token.
+        Two-step process:
+          1. POST /v1/matches — creates the match/booking
+          2. POST /v1/matches/{id}/players — adds the player name
+        The first call ignores teams/players data, so we add the player
+        separately via the dedicated addPlayer endpoint.
         start_time should be in UTC ISO format (as returned by availability).
         """
         await self.ensure_tenant_auth()
@@ -439,39 +443,7 @@ class PlaytomicClient:
         except (ValueError, TypeError):
             end_time = start_time  # fallback
 
-        # Build player entry for Team A
-        # Playtomic Manager requires merchant_player_id in guest format
-        # to properly display the player name in the booking UI.
-        timestamp_ms = int(time.time() * 1000)
-        random_hex = uuid.uuid4().hex[:8]
-        guest_id = f"guest:{TENANT_ID}:{timestamp_ms}:{random_hex}"
-
-        # Build display name: include phone for easy identification
-        display_name = customer_name or "WhatsApp"
-        if customer_phone:
-            phone_clean = customer_phone.lstrip("+").strip()
-            display_name = f"{display_name} ({phone_clean[-10:]})"
-
-        player = {
-            "name": display_name,
-            "merchant_player_id": guest_id,
-            "user_id": None,
-            "contact_id": None,
-            "email": None,
-            "phone": customer_phone.lstrip("+").strip() if customer_phone else None,
-        }
-
-        teams = [
-            {
-                "team_id": "0",
-                "players": [player],
-            },
-            {
-                "team_id": "1",
-                "players": [],
-            },
-        ]
-
+        # Step 1: Create the match (without players — API ignores them)
         match_payload = {
             "sport_id": "PADEL",
             "tenant_id": TENANT_ID,
@@ -484,7 +456,6 @@ class PlaytomicClient:
             "competition_mode": "COMPETITIVE",
             "min_players_per_team": 2,
             "max_players_per_team": 2,
-            "teams": teams,
         }
 
         try:
@@ -516,6 +487,14 @@ class PlaytomicClient:
                 match_data = r.json()
                 match_id = match_data.get("match_id", "")
                 logger.info(f"Booking OK — match_id: {match_id}")
+
+                # Step 2: Add player to the booking so the name shows
+                # in Playtomic Manager.
+                if match_id and (customer_name or customer_phone):
+                    await self._add_player_to_match(
+                        match_id, headers, customer_name, customer_phone
+                    )
+
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
@@ -524,6 +503,51 @@ class PlaytomicClient:
         except Exception as e:
             logger.error(f"Booking exception: {e}")
             return {"error": f"Error de conexión: {e}"}
+
+    async def _add_player_to_match(
+        self,
+        match_id: str,
+        headers: dict,
+        customer_name: str = "",
+        customer_phone: str = "",
+    ) -> None:
+        """
+        Add a player to an existing match via POST /v1/matches/{id}/players.
+        This makes the player name appear in Playtomic Manager's booking list.
+        """
+        # Build guest merchant_player_id
+        timestamp_ms = int(time.time() * 1000)
+        random_hex = uuid.uuid4().hex[:8]
+        guest_id = f"guest:{timestamp_ms}:{random_hex}"
+
+        # Build display name: include phone for easy identification
+        display_name = customer_name or "WhatsApp"
+        if customer_phone:
+            phone_clean = customer_phone.lstrip("+").strip()
+            display_name = f"{display_name} ({phone_clean[-10:]})"
+
+        player_payload = {
+            "name": display_name,
+            "merchant_player_id": guest_id,
+            "team_id": "0",
+        }
+
+        try:
+            logger.info(f"Adding player '{display_name}' to match {match_id}")
+            r = await self.client.post(
+                f"{PLAYTOMIC_API}/v1/matches/{match_id}/players",
+                headers=headers,
+                json=player_payload,
+            )
+            if r.status_code == 200:
+                logger.info(f"Player added OK to match {match_id}")
+            else:
+                logger.warning(
+                    f"Add player returned {r.status_code}: {r.text[:200]}"
+                )
+        except Exception as e:
+            # Non-fatal: booking was already created successfully
+            logger.warning(f"Add player exception (non-fatal): {e}")
 
     # ─── LIST MATCHES (for admin/cleanup) ───
     async def list_matches(self, date_str: str = None) -> list:
