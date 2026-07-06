@@ -461,6 +461,15 @@ class PlaytomicClient:
             "competition_mode": "COMPETITIVE",
             "min_players_per_team": 2,
             "max_players_per_team": 2,
+            # Registration fields — required for Manager Schedule
+            # clickability. The EditTimeLock component crashes without them.
+            "has_registration": True,
+            "registration_info": {
+                "payment_status": "PENDING",
+                "payment_method": "CASH",
+                "amount": 0,
+                "currency": "MXN",
+            },
         }
 
         try:
@@ -500,6 +509,14 @@ class PlaytomicClient:
                         match_id, headers, customer_name, customer_phone
                     )
 
+                # Step 3: Add registration info so booking is clickable
+                # in the Manager Schedule view. Without this, the
+                # EditTimeLock component crashes.
+                if match_id:
+                    await self._add_registration_info(
+                        match_id, headers
+                    )
+
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
@@ -508,6 +525,87 @@ class PlaytomicClient:
         except Exception as e:
             logger.error(f"Booking exception: {e}")
             return {"error": f"Error de conexión: {e}"}
+
+    async def _add_registration_info(
+        self, match_id: str, headers: dict
+    ) -> None:
+        """
+        Add registration/payment info to a match so it becomes clickable
+        in the Playtomic Manager Schedule view.
+
+        The Manager's EditTimeLock component requires matches to have
+        registration_info (has_registration=true) — without it, clicking
+        a booking crashes the UI with 'Something went wrong'.
+
+        Tries multiple approaches:
+          1. PATCH /v1/matches/{id} via Manager proxy with registration fields
+          2. PUT registration info via dedicated endpoint
+          3. PATCH via public API as fallback
+        """
+        MANAGER_API = "https://manager.playtomic.io/api"
+
+        # Registration payload — mimics what the Manager creates
+        registration_payload = {
+            "has_registration": True,
+            "registration_info": {
+                "payment_status": "PENDING",
+                "payment_method": "CASH",
+                "amount": 0,
+                "currency": "MXN",
+            },
+        }
+
+        # Approach 1: PATCH via Manager API proxy
+        try:
+            logger.info(f"Adding registration_info to match {match_id} via Manager PATCH")
+            r = await self.client.patch(
+                f"{MANAGER_API}/v1/matches/{match_id}",
+                headers=headers,
+                json=registration_payload,
+            )
+            logger.info(f"Registration PATCH (Manager): {r.status_code} {r.text[:300]}")
+            if r.status_code in (200, 204):
+                logger.info(f"Registration info added OK via Manager API")
+                return
+        except Exception as e:
+            logger.warning(f"Registration PATCH (Manager) exception: {e}")
+
+        # Approach 2: Try registration-specific endpoint via Manager proxy
+        try:
+            logger.info(f"Trying registration endpoint for match {match_id}")
+            r = await self.client.post(
+                f"{MANAGER_API}/v1/matches/{match_id}/registration",
+                headers=headers,
+                json={
+                    "payment_status": "PENDING",
+                    "payment_method": "CASH",
+                    "amount": 0,
+                    "currency": "MXN",
+                },
+            )
+            logger.info(f"Registration POST: {r.status_code} {r.text[:300]}")
+            if r.status_code in (200, 201, 204):
+                logger.info(f"Registration endpoint OK")
+                return
+        except Exception as e:
+            logger.warning(f"Registration endpoint exception: {e}")
+
+        # Approach 3: PATCH via public API
+        try:
+            logger.info(f"Adding registration_info to match {match_id} via public PATCH")
+            r = await self.client.patch(
+                f"{PLAYTOMIC_API}/v1/matches/{match_id}",
+                headers=headers,
+                json=registration_payload,
+            )
+            logger.info(f"Registration PATCH (Public): {r.status_code} {r.text[:300]}")
+            if r.status_code in (200, 204):
+                logger.info(f"Registration info added OK via Public API")
+                return
+        except Exception as e:
+            logger.warning(f"Registration PATCH (Public) exception: {e}")
+
+        logger.warning(f"Could not add registration_info to match {match_id} via any method")
 
     async def _search_customer_by_phone(
         self, headers: dict, phone: str
