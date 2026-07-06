@@ -443,11 +443,10 @@ class PlaytomicClient:
         except (ValueError, TypeError):
             end_time = start_time  # fallback
 
-        # Step 1: Create the match via Manager API proxy
-        # Using the Manager proxy (not public API) ensures the booking
-        # shows Origin: "Club" instead of "Unknown", and makes it
-        # clickable/editable in the Playtomic Manager Schedule view.
-        MANAGER_API = "https://manager.playtomic.io/api"
+        # Step 1: Create the match
+        # Uses PRIVATE visibility so bookings are clickable/editable
+        # in the Playtomic Manager Schedule view (HIDDEN makes them
+        # non-interactive).
         match_payload = {
             "sport_id": "PADEL",
             "tenant_id": TENANT_ID,
@@ -464,9 +463,8 @@ class PlaytomicClient:
 
         try:
             logger.info(f"Creating booking: {resource_id} at {start_time} for '{customer_name}' phone={customer_phone}")
-            # Try Manager proxy first (makes bookings clickable in Manager)
             r = await self.client.post(
-                f"{MANAGER_API}/v1/matches",
+                f"{PLAYTOMIC_API}/v1/matches",
                 headers=headers,
                 json=match_payload,
             )
@@ -479,7 +477,7 @@ class PlaytomicClient:
                 if self.tenant_token:
                     headers["Authorization"] = f"Bearer {self.tenant_token}"
                     r = await self.client.post(
-                        f"{MANAGER_API}/v1/matches",
+                        f"{PLAYTOMIC_API}/v1/matches",
                         headers=headers,
                         json=match_payload,
                     )
