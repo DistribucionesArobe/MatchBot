@@ -455,7 +455,7 @@ class PlaytomicClient:
             "end_date": end_time,
             "match_type": "BOOKING",
             "match_organization": "TENANT",
-            "visibility": "PRIVATE",
+            "visibility": "HIDDEN",
             "competition_mode": "COMPETITIVE",
             "min_players_per_team": 2,
             "max_players_per_team": 2,
