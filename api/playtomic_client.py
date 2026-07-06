@@ -444,9 +444,10 @@ class PlaytomicClient:
             end_time = start_time  # fallback
 
         # Step 1: Create the match
-        # Uses PRIVATE visibility so bookings are clickable/editable
-        # in the Playtomic Manager Schedule view (HIDDEN makes them
-        # non-interactive).
+        # match_origin must be a recognized value (PLAYTOMIC_MANAGER,
+        # APP_IOS, WEB_DESKTOP) — "UNKNOWN" crashes the Manager's
+        # edit form. Using PLAYTOMIC_MANAGER so bookings are
+        # clickable/editable in the Schedule view.
         match_payload = {
             "sport_id": "PADEL",
             "tenant_id": TENANT_ID,
@@ -456,6 +457,7 @@ class PlaytomicClient:
             "match_type": "BOOKING",
             "match_organization": "TENANT",
             "visibility": "HIDDEN",
+            "match_origin": "PLAYTOMIC_MANAGER",
             "competition_mode": "COMPETITIVE",
             "min_players_per_team": 2,
             "max_players_per_team": 2,
