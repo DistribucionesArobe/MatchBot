@@ -461,9 +461,10 @@ class PlaytomicClient:
             "competition_mode": "COMPETITIVE",
             "min_players_per_team": 2,
             "max_players_per_team": 2,
-            # NOTE: Do NOT include has_registration or registration_info
-            # here — the public API rejects unknown fields with 400.
-            # Registration is added post-creation via _add_registration_info().
+            # owner_id is REQUIRED for the Manager Schedule to allow
+            # clicking on the booking. Without it, EditTimeLock throws
+            # "unknown match type". We use the logged-in user's ID.
+            "owner_id": self.user_id,
         }
 
         try:
@@ -524,82 +525,33 @@ class PlaytomicClient:
         self, match_id: str, headers: dict
     ) -> None:
         """
-        Add registration/payment info to a match so it becomes clickable
-        in the Playtomic Manager Schedule view.
+        Ensure match has owner_id so it's clickable in Manager Schedule.
 
-        The Manager's EditTimeLock component requires matches to have
-        registration_info (has_registration=true) — without it, clicking
-        a booking crashes the UI with 'Something went wrong'.
+        The Manager's EditTimeLock component classifies matches using a
+        function that checks: leagueId → recurringMatchConfigurationId →
+        isPlaytomicManaged → ownerId. Without ownerId (and without the
+        other fields), it throws 'unknown match type'.
 
-        Tries multiple approaches:
-          1. PATCH /v1/matches/{id} via Manager proxy with registration fields
-          2. PUT registration info via dedicated endpoint
-          3. PATCH via public API as fallback
+        If owner_id was already set in the POST payload and accepted,
+        this is a no-op safety net. Otherwise it PATCHes owner_id onto
+        the match as a fallback.
         """
-        MANAGER_API = "https://manager.playtomic.io/api"
-
-        # Registration payload — mimics what the Manager creates
-        registration_payload = {
-            "has_registration": True,
-            "registration_info": {
-                "payment_status": "PENDING",
-                "payment_method": "CASH",
-                "amount": 0,
-                "currency": "MXN",
-            },
-        }
-
-        # Approach 1: PATCH via Manager API proxy
+        # PATCH owner_id via public API (this is a known match field)
         try:
-            logger.info(f"Adding registration_info to match {match_id} via Manager PATCH")
-            r = await self.client.patch(
-                f"{MANAGER_API}/v1/matches/{match_id}",
-                headers=headers,
-                json=registration_payload,
-            )
-            logger.info(f"Registration PATCH (Manager): {r.status_code} {r.text[:300]}")
-            if r.status_code in (200, 204):
-                logger.info(f"Registration info added OK via Manager API")
-                return
-        except Exception as e:
-            logger.warning(f"Registration PATCH (Manager) exception: {e}")
-
-        # Approach 2: Try registration-specific endpoint via Manager proxy
-        try:
-            logger.info(f"Trying registration endpoint for match {match_id}")
-            r = await self.client.post(
-                f"{MANAGER_API}/v1/matches/{match_id}/registration",
-                headers=headers,
-                json={
-                    "payment_status": "PENDING",
-                    "payment_method": "CASH",
-                    "amount": 0,
-                    "currency": "MXN",
-                },
-            )
-            logger.info(f"Registration POST: {r.status_code} {r.text[:300]}")
-            if r.status_code in (200, 201, 204):
-                logger.info(f"Registration endpoint OK")
-                return
-        except Exception as e:
-            logger.warning(f"Registration endpoint exception: {e}")
-
-        # Approach 3: PATCH via public API
-        try:
-            logger.info(f"Adding registration_info to match {match_id} via public PATCH")
+            logger.info(f"Ensuring owner_id on match {match_id} via public PATCH")
             r = await self.client.patch(
                 f"{PLAYTOMIC_API}/v1/matches/{match_id}",
                 headers=headers,
-                json=registration_payload,
+                json={"owner_id": self.user_id},
             )
-            logger.info(f"Registration PATCH (Public): {r.status_code} {r.text[:300]}")
+            logger.info(f"owner_id PATCH (Public): {r.status_code} {r.text[:300]}")
             if r.status_code in (200, 204):
-                logger.info(f"Registration info added OK via Public API")
+                logger.info(f"owner_id set OK on match {match_id}")
                 return
         except Exception as e:
-            logger.warning(f"Registration PATCH (Public) exception: {e}")
+            logger.warning(f"owner_id PATCH exception: {e}")
 
-        logger.warning(f"Could not add registration_info to match {match_id} via any method")
+        logger.warning(f"Could not set owner_id on match {match_id}")
 
     async def _search_customer_by_phone(
         self, headers: dict, phone: str
