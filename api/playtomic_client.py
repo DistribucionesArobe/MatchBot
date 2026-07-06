@@ -509,7 +509,9 @@ class PlaytomicClient:
     ) -> dict | None:
         """
         Search for an existing customer in Playtomic by phone number.
-        Uses GET /api/v1/tenant_profiles/suggestions (Manager proxy).
+        Uses GET /api/v2/users/suggestions/players (Manager proxy).
+        This is the same endpoint the Manager UI uses in the Owner/Player
+        search fields — it searches across name, phone, and email.
         Returns {user_id, full_name, phone, email} if found, else None.
         """
         MANAGER_API = "https://manager.playtomic.io/api"
@@ -517,53 +519,47 @@ class PlaytomicClient:
         # Normalize phone: strip + and spaces, try different formats
         phone_clean = phone.lstrip("+").replace(" ", "").strip()
 
-        # Try multiple search formats: full number, last 10 digits
-        search_variants = [phone_clean]
+        # Try: last 10 digits first (more likely to match), then full number
+        search_variants = []
         if len(phone_clean) > 10:
             search_variants.append(phone_clean[-10:])  # without country code
+        search_variants.append(phone_clean)
 
         for search_term in search_variants:
             try:
-                logger.info(f"Searching customer by phone: '{search_term}'")
+                logger.info(f"Searching player by phone: '{search_term}'")
                 r = await self.client.get(
-                    f"{MANAGER_API}/v1/tenant_profiles/suggestions",
+                    f"{MANAGER_API}/v2/users/suggestions/players",
                     headers=headers,
                     params={
                         "tenant_id": TENANT_ID,
                         "filter": search_term,
-                        "page": "0",
-                        "size": "10",
+                        "size": "5",
                     },
                 )
+                logger.info(f"Player search status={r.status_code} body={r.text[:300]}")
                 if r.status_code == 200:
                     results = r.json()
                     if isinstance(results, list) and len(results) > 0:
-                        # Look for a result whose phone matches
-                        for profile in results:
-                            cp = profile.get("customer_profile", {})
-                            profile_phone = (cp.get("phone") or "").replace(" ", "").lstrip("+")
-                            if profile_phone and (
-                                profile_phone.endswith(phone_clean[-10:])
-                                or phone_clean.endswith(profile_phone[-10:])
-                            ):
-                                result = {
-                                    "user_id": profile.get("user_id", ""),
-                                    "full_name": cp.get("full_name", ""),
-                                    "phone": cp.get("phone", ""),
-                                    "email": cp.get("email", ""),
-                                }
-                                logger.info(
-                                    f"Customer found: '{result['full_name']}' "
-                                    f"phone={result['phone']} user_id={result['user_id'][:8]}..."
-                                )
-                                return result
-                        logger.info(f"Search returned {len(results)} results but no phone match")
+                        # Use the first result — the API already does fuzzy matching
+                        player = results[0]
+                        result = {
+                            "user_id": str(player.get("user_id", "")),
+                            "full_name": player.get("full_name", ""),
+                            "phone": player.get("phone", ""),
+                            "email": player.get("email", ""),
+                        }
+                        logger.info(
+                            f"Player found: '{result['full_name']}' "
+                            f"user_id={result['user_id']}"
+                        )
+                        return result
                     else:
-                        logger.info(f"No customers found for '{search_term}'")
+                        logger.info(f"No players found for '{search_term}'")
                 else:
-                    logger.warning(f"Customer search returned {r.status_code}")
+                    logger.warning(f"Player search returned {r.status_code}")
             except Exception as e:
-                logger.warning(f"Customer search exception: {e}")
+                logger.warning(f"Player search exception: {e}")
 
         return None
 
