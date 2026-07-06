@@ -514,7 +514,15 @@ class PlaytomicClient:
         """
         Add a player to an existing match via POST /v1/matches/{id}/players.
         This makes the player name appear in Playtomic Manager's booking list.
+
+        IMPORTANT: Uses the Manager API proxy (manager.playtomic.io/api) instead
+        of the public API (api.playtomic.io) because the public API doesn't
+        properly persist player data on matches. The Manager proxy is what
+        the Playtomic Manager UI itself uses for addPlayer.
         """
+        # Manager API proxy — the same endpoint the Manager UI uses
+        MANAGER_API = "https://manager.playtomic.io/api"
+
         # Build guest merchant_player_id
         timestamp_ms = int(time.time() * 1000)
         random_hex = uuid.uuid4().hex[:8]
@@ -532,22 +540,26 @@ class PlaytomicClient:
             "team_id": "0",
         }
 
-        try:
-            logger.info(f"Adding player '{display_name}' to match {match_id}")
-            r = await self.client.post(
-                f"{PLAYTOMIC_API}/v1/matches/{match_id}/players",
-                headers=headers,
-                json=player_payload,
-            )
-            if r.status_code == 200:
-                logger.info(f"Player added OK to match {match_id}")
-            else:
-                logger.warning(
-                    f"Add player returned {r.status_code}: {r.text[:200]}"
-                )
-        except Exception as e:
-            # Non-fatal: booking was already created successfully
-            logger.warning(f"Add player exception (non-fatal): {e}")
+        # Try Manager API first (what the UI uses), fall back to public API
+        endpoints = [
+            (f"{MANAGER_API}/v1/matches/{match_id}/players", "Manager API"),
+            (f"{PLAYTOMIC_API}/v1/matches/{match_id}/players", "Public API"),
+        ]
+
+        for url, label in endpoints:
+            try:
+                logger.info(f"Adding player '{display_name}' to match {match_id} via {label}: {url}")
+                r = await self.client.post(url, headers=headers, json=player_payload)
+                logger.info(f"Add player via {label}: status={r.status_code} body={r.text[:300]}")
+                if r.status_code == 200:
+                    logger.info(f"Player added OK to match {match_id} via {label}")
+                    return  # Success — no need to try next endpoint
+                else:
+                    logger.warning(f"Add player via {label} returned {r.status_code}, trying next...")
+            except Exception as e:
+                logger.warning(f"Add player via {label} exception: {e}, trying next...")
+
+        logger.warning(f"Could not add player to match {match_id} via any endpoint")
 
     # ─── LIST MATCHES (for admin/cleanup) ───
     async def list_matches(self, date_str: str = None) -> list:
