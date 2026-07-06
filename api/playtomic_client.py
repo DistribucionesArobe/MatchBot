@@ -461,15 +461,9 @@ class PlaytomicClient:
             "competition_mode": "COMPETITIVE",
             "min_players_per_team": 2,
             "max_players_per_team": 2,
-            # Registration fields — required for Manager Schedule
-            # clickability. The EditTimeLock component crashes without them.
-            "has_registration": True,
-            "registration_info": {
-                "payment_status": "PENDING",
-                "payment_method": "CASH",
-                "amount": 0,
-                "currency": "MXN",
-            },
+            # NOTE: Do NOT include has_registration or registration_info
+            # here — the public API rejects unknown fields with 400.
+            # Registration is added post-creation via _add_registration_info().
         }
 
         try:
