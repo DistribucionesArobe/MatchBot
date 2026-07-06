@@ -504,6 +504,69 @@ class PlaytomicClient:
             logger.error(f"Booking exception: {e}")
             return {"error": f"Error de conexión: {e}"}
 
+    async def _search_customer_by_phone(
+        self, headers: dict, phone: str
+    ) -> dict | None:
+        """
+        Search for an existing customer in Playtomic by phone number.
+        Uses GET /api/v1/tenant_profiles/suggestions (Manager proxy).
+        Returns {user_id, full_name, phone, email} if found, else None.
+        """
+        MANAGER_API = "https://manager.playtomic.io/api"
+
+        # Normalize phone: strip + and spaces, try different formats
+        phone_clean = phone.lstrip("+").replace(" ", "").strip()
+
+        # Try multiple search formats: full number, last 10 digits
+        search_variants = [phone_clean]
+        if len(phone_clean) > 10:
+            search_variants.append(phone_clean[-10:])  # without country code
+
+        for search_term in search_variants:
+            try:
+                logger.info(f"Searching customer by phone: '{search_term}'")
+                r = await self.client.get(
+                    f"{MANAGER_API}/v1/tenant_profiles/suggestions",
+                    headers=headers,
+                    params={
+                        "tenant_id": TENANT_ID,
+                        "filter": search_term,
+                        "page": "0",
+                        "size": "10",
+                    },
+                )
+                if r.status_code == 200:
+                    results = r.json()
+                    if isinstance(results, list) and len(results) > 0:
+                        # Look for a result whose phone matches
+                        for profile in results:
+                            cp = profile.get("customer_profile", {})
+                            profile_phone = (cp.get("phone") or "").replace(" ", "").lstrip("+")
+                            if profile_phone and (
+                                profile_phone.endswith(phone_clean[-10:])
+                                or phone_clean.endswith(profile_phone[-10:])
+                            ):
+                                result = {
+                                    "user_id": profile.get("user_id", ""),
+                                    "full_name": cp.get("full_name", ""),
+                                    "phone": cp.get("phone", ""),
+                                    "email": cp.get("email", ""),
+                                }
+                                logger.info(
+                                    f"Customer found: '{result['full_name']}' "
+                                    f"phone={result['phone']} user_id={result['user_id'][:8]}..."
+                                )
+                                return result
+                        logger.info(f"Search returned {len(results)} results but no phone match")
+                    else:
+                        logger.info(f"No customers found for '{search_term}'")
+                else:
+                    logger.warning(f"Customer search returned {r.status_code}")
+            except Exception as e:
+                logger.warning(f"Customer search exception: {e}")
+
+        return None
+
     async def _add_player_to_match(
         self,
         match_id: str,
@@ -515,28 +578,46 @@ class PlaytomicClient:
         Add a player to an existing match via POST /v1/matches/{id}/players.
         This makes the player name appear in Playtomic Manager's booking list.
 
+        Flow:
+          1. Search for existing customer by phone in Playtomic DB
+          2. If found → use their user_id and full_name (links to real profile)
+          3. If not found → create as guest with WhatsApp name + phone
+
         IMPORTANT: Uses the Manager API proxy (manager.playtomic.io/api) instead
         of the public API (api.playtomic.io) because the public API doesn't
-        properly persist player data on matches. The Manager proxy is what
-        the Playtomic Manager UI itself uses for addPlayer.
+        properly persist player data on matches.
         """
-        # Manager API proxy — the same endpoint the Manager UI uses
         MANAGER_API = "https://manager.playtomic.io/api"
 
-        # Build guest merchant_player_id
-        timestamp_ms = int(time.time() * 1000)
-        random_hex = uuid.uuid4().hex[:8]
-        guest_id = f"guest:{timestamp_ms}:{random_hex}"
-
-        # Build display name: include phone for easy identification
-        display_name = customer_name or "WhatsApp"
+        # Step 1: Try to find existing customer by phone
+        existing_customer = None
         if customer_phone:
-            phone_clean = customer_phone.lstrip("+").strip()
-            display_name = f"{display_name} ({phone_clean[-10:]})"
+            existing_customer = await self._search_customer_by_phone(
+                headers, customer_phone
+            )
+
+        if existing_customer and existing_customer.get("user_id"):
+            # Use the real customer profile
+            display_name = existing_customer["full_name"] or customer_name or "WhatsApp"
+            player_id = existing_customer["user_id"]
+            logger.info(
+                f"Linking booking to existing customer: '{display_name}' "
+                f"(user_id={player_id[:8]}...)"
+            )
+        else:
+            # Fallback: create as guest with WhatsApp name + phone
+            timestamp_ms = int(time.time() * 1000)
+            random_hex = uuid.uuid4().hex[:8]
+            player_id = f"guest:{timestamp_ms}:{random_hex}"
+            display_name = customer_name or "WhatsApp"
+            if customer_phone:
+                phone_clean = customer_phone.lstrip("+").strip()
+                display_name = f"{display_name} ({phone_clean[-10:]})"
+            logger.info(f"No existing customer found, using guest: '{display_name}'")
 
         player_payload = {
             "name": display_name,
-            "merchant_player_id": guest_id,
+            "merchant_player_id": player_id,
             "team_id": "0",
         }
 
@@ -548,12 +629,12 @@ class PlaytomicClient:
 
         for url, label in endpoints:
             try:
-                logger.info(f"Adding player '{display_name}' to match {match_id} via {label}: {url}")
+                logger.info(f"Adding player '{display_name}' to match {match_id} via {label}")
                 r = await self.client.post(url, headers=headers, json=player_payload)
                 logger.info(f"Add player via {label}: status={r.status_code} body={r.text[:300]}")
                 if r.status_code == 200:
                     logger.info(f"Player added OK to match {match_id} via {label}")
-                    return  # Success — no need to try next endpoint
+                    return  # Success
                 else:
                     logger.warning(f"Add player via {label} returned {r.status_code}, trying next...")
             except Exception as e:
