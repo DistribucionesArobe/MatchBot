@@ -469,6 +469,72 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
         return
 
     if button_id == "btn_confirm_yes" or (text and text.lower() in ("si", "sí", "yes", "confirmar")):
+        # ── PLAYTOMIC MODE: crear reserva directamente ──
+        if USE_PLAYTOMIC and data.get("resource_id"):
+            customer_name = data.get("customer_name", "")
+            customer_phone = data.get("customer_phone", to)
+
+            result = await playtomic.create_booking(
+                resource_id=data["resource_id"],
+                start_time=data.get("start_iso", ""),
+                duration=data.get("duration", 90),
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+            )
+
+            _set_state(club_id, to, "idle", {})
+            price = data["price_cents"] / 100
+
+            # Format date nicely
+            try:
+                d = date.fromisoformat(data["date"])
+                date_label = f"{DAY_NAMES[d.weekday()]} {d.day}/{d.month}/{d.year}"
+            except (ValueError, KeyError):
+                date_label = data["date"]
+
+            if result.get("success"):
+                confirmation_msg = (
+                    f"✅ *¡Reserva confirmada!*\n\n"
+                    f"📅 {date_label}\n"
+                    f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
+                    f"🎾 {data['court_name']}\n"
+                    f"💰 ${price:.0f} MXN\n\n"
+                    f"💵 Paga al llegar al club.\n"
+                    f"\n¡Nos vemos en la cancha! 🎾"
+                )
+            else:
+                logger.warning(f"Playtomic booking failed: {result.get('error')}")
+                confirmation_msg = (
+                    f"✅ *¡Reserva recibida!*\n\n"
+                    f"📅 {date_label}\n"
+                    f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
+                    f"🎾 {data['court_name']}\n"
+                    f"💰 ${price:.0f} MXN\n\n"
+                    f"El club confirmará tu reserva en breve. ¡Nos vemos en la cancha! 🎾"
+                )
+
+            await send_text(phone_id, token, to, confirmation_msg)
+
+            # Notify club owner
+            if CLUB_NOTIFY_PHONE:
+                display_name = customer_name or "Sin nombre"
+                status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
+                try:
+                    await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                        f"🔔 *Nueva reserva por WhatsApp*\n\n"
+                        f"👤 {display_name}\n"
+                        f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"
+                        f"📅 {date_label} a las {data['start_time']}\n"
+                        f"🎾 {data['court_name']}\n"
+                        f"💰 ${price:.0f} MXN\n\n"
+                        f"{status}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify club: {e}")
+
+            return
+
+        # ── INTERNAL DB MODE (original) ──
         _set_state(club_id, to, "choosing_payment", data)
         await send_interactive_buttons(
             phone_id, token, to,
