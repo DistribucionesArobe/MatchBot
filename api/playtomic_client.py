@@ -61,7 +61,11 @@ class PlaytomicClient:
                 logger.info(f"Attempting login via {label} ({base}/v3/auth/login)")
                 r = await self.client.post(
                     f"{base}/v3/auth/login",
-                    json={"email": PLAYTOMIC_EMAIL, "password": PLAYTOMIC_PASSWORD},
+                    json={
+                        "email": PLAYTOMIC_EMAIL,
+                        "password": PLAYTOMIC_PASSWORD,
+                        "audience": "com.playtomic.manager",
+                    },
                 )
                 if r.status_code == 200:
                     data = r.json()
