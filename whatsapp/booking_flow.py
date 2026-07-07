@@ -41,6 +41,19 @@ from whatsapp.sender import send_text, send_interactive_buttons, send_interactiv
 # Use Playtomic for availability/booking if configured
 USE_PLAYTOMIC = bool(os.getenv("PLAYTOMIC_TENANT_ID", ""))
 
+# Club timezone offset from UTC (Cd. Victoria = -6)
+CLUB_UTC_OFFSET = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+
+
+def _local_today() -> date:
+    """Get today's date in the club's local timezone.
+    The server runs in UTC; without this, date.today() returns the UTC
+    date, which after 6 PM local time (midnight UTC) is already tomorrow.
+    """
+    now_utc = datetime.utcnow()
+    local_dt = now_utc + timedelta(hours=CLUB_UTC_OFFSET)
+    return local_dt.date()
+
 # Club owner notification — receives WhatsApp alerts on new bookings/cancellations
 CLUB_NOTIFY_PHONE = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
 
@@ -146,7 +159,7 @@ async def _send_main_menu(phone_id, token, to, club_name):
 # ─────────────────────────────────────────────────────
 
 async def _send_date_picker(phone_id, token, to):
-    today = date.today()
+    today = _local_today()
     rows = []
     for i in range(7):
         d = today + timedelta(days=i)
@@ -822,7 +835,7 @@ def _set_state(club_id: int, wa_phone: str, state: str, data: dict):
 def _parse_date_text(text: str) -> str | None:
     """Try to parse common date expressions."""
     t = text.lower().strip()
-    today = date.today()
+    today = _local_today()
 
     if t in ("hoy", "today"):
         return today.isoformat()
