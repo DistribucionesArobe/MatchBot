@@ -443,11 +443,83 @@ class PlaytomicClient:
         except (ValueError, TypeError):
             end_time = start_time  # fallback
 
-        # Step 1: Create the match
-        # match_origin must be a recognized value (PLAYTOMIC_MANAGER,
-        # APP_IOS, WEB_DESKTOP) — "UNKNOWN" crashes the Manager's
-        # edit form. Using PLAYTOMIC_MANAGER so bookings are
-        # clickable/editable in the Schedule view.
+        MANAGER_API = "https://manager.playtomic.io/api"
+
+        # Build player info for registration
+        player_merchant_id = None
+        player_display_name = customer_name or "WhatsApp"
+
+        # Search for existing customer first
+        existing = None
+        if customer_phone:
+            existing = await self._search_customer_by_phone(headers, customer_phone)
+
+        if existing and existing.get("user_id"):
+            player_merchant_id = existing["user_id"]
+            player_display_name = existing.get("full_name") or customer_name or "WhatsApp"
+            player_type = "CUSTOMER"
+        else:
+            timestamp_ms = int(time.time() * 1000)
+            random_hex = uuid.uuid4().hex[:8]
+            player_merchant_id = f"guest:{timestamp_ms}:{random_hex}"
+            if customer_phone:
+                phone_clean = customer_phone.lstrip("+").strip()
+                player_display_name = f"{player_display_name} ({phone_clean[-10:]})"
+            player_type = "GUEST"
+
+        # ── Attempt 1: Create via Manager proxy with full payload ──
+        # The Manager uses camelCase and includes registrationInfo in the
+        # creation call. This is the ideal path — produces a booking
+        # identical to one created from the Manager UI.
+        manager_payload = {
+            "sportId": "PADEL",
+            "tenantId": TENANT_ID,
+            "resourceId": resource_id,
+            "startDate": start_time,
+            "endDate": end_time,
+            "visibility": "HIDDEN",
+            "isPlaytomicManaged": False,
+            "maxPlayersPerTeam": 2,
+            "ownerId": existing["user_id"] if existing and player_type == "CUSTOMER" else None,
+            "registrationInfo": {
+                "paymentType": "SINGLE_PAYER",
+                "registrations": [
+                    {
+                        "merchantPlayerId": player_merchant_id,
+                        "name": player_display_name,
+                    },
+                    {"name": None},
+                    {"name": None},
+                    {"name": None},
+                ],
+            },
+            "description": None,
+            "privateNotes": None,
+        }
+
+        try:
+            logger.info(f"Creating booking via Manager proxy: {resource_id} at {start_time}")
+            r = await self.client.post(
+                f"{MANAGER_API}/v1/matches",
+                headers=headers,
+                json=manager_payload,
+            )
+            logger.info(f"Manager proxy create: {r.status_code} {r.text[:500]}")
+
+            if r.status_code in (200, 201):
+                match_data = r.json()
+                match_id = match_data.get("match_id", match_data.get("matchId", ""))
+                logger.info(f"Booking OK via Manager — match_id: {match_id}")
+                return {"success": True, "booking": match_data, "match_id": match_id}
+            else:
+                logger.warning(f"Manager proxy create failed ({r.status_code}), falling back to public API")
+        except Exception as e:
+            logger.warning(f"Manager proxy create exception: {e}, falling back to public API")
+
+        # ── Attempt 2: Create via public API (fallback) ──
+        # Public API uses snake_case and doesn't support registrationInfo.
+        # Booking will be clickable (owner_id present) but without
+        # payment/price section in the Manager edit form.
         match_payload = {
             "sport_id": "PADEL",
             "tenant_id": TENANT_ID,
@@ -461,14 +533,11 @@ class PlaytomicClient:
             "competition_mode": "COMPETITIVE",
             "min_players_per_team": 2,
             "max_players_per_team": 2,
-            # owner_id is REQUIRED for the Manager Schedule to allow
-            # clicking on the booking. Without it, EditTimeLock throws
-            # "unknown match type". We use the logged-in user's ID.
             "owner_id": self.user_id,
         }
 
         try:
-            logger.info(f"Creating booking: {resource_id} at {start_time} for '{customer_name}' phone={customer_phone}")
+            logger.info(f"Creating booking via public API: {resource_id} at {start_time} for '{customer_name}'")
             r = await self.client.post(
                 f"{PLAYTOMIC_API}/v1/matches",
                 headers=headers,
@@ -490,26 +559,23 @@ class PlaytomicClient:
                 else:
                     return {"error": "No se pudo renovar el token de manager"}
 
-            logger.info(f"Booking response: {r.status_code} {r.text[:500]}")
+            logger.info(f"Public API create: {r.status_code} {r.text[:500]}")
 
             if r.status_code in (200, 201):
                 match_data = r.json()
                 match_id = match_data.get("match_id", "")
-                logger.info(f"Booking OK — match_id: {match_id}")
+                logger.info(f"Booking OK via public API — match_id: {match_id}")
 
-                # Step 2: Add player to the booking so the name shows
-                # in Playtomic Manager.
+                # Add player to the booking
                 if match_id and (customer_name or customer_phone):
                     await self._add_player_to_match(
                         match_id, headers, customer_name, customer_phone
                     )
 
-                # Step 3: Add registration info so booking is clickable
-                # in the Manager Schedule view. Without this, the
-                # EditTimeLock component crashes.
+                # Try to PATCH registrationInfo onto the match
                 if match_id:
                     await self._add_registration_info(
-                        match_id, headers
+                        match_id, headers, player_merchant_id, player_display_name
                     )
 
                 return {"success": True, "booking": match_data, "match_id": match_id}
@@ -522,36 +588,73 @@ class PlaytomicClient:
             return {"error": f"Error de conexión: {e}"}
 
     async def _add_registration_info(
-        self, match_id: str, headers: dict
+        self, match_id: str, headers: dict,
+        player_merchant_id: str = "", player_name: str = ""
     ) -> None:
         """
-        Ensure match has owner_id so it's clickable in Manager Schedule.
-
-        The Manager's EditTimeLock component classifies matches using a
-        function that checks: leagueId → recurringMatchConfigurationId →
-        isPlaytomicManaged → ownerId. Without ownerId (and without the
-        other fields), it throws 'unknown match type'.
-
-        If owner_id was already set in the POST payload and accepted,
-        this is a no-op safety net. Otherwise it PATCHes owner_id onto
-        the match as a fallback.
+        Try to add registrationInfo to a match so the Manager shows the
+        Payment section with prices. Tries Manager proxy PATCH with
+        camelCase payload (the format the Manager UI uses).
         """
-        # PATCH owner_id via public API (this is a known match field)
+        MANAGER_API = "https://manager.playtomic.io/api"
+
+        # camelCase payload — matches what the Manager JS sends
+        reg_payload = {
+            "registrationInfo": {
+                "paymentType": "SINGLE_PAYER",
+                "registrations": [
+                    {
+                        "merchantPlayerId": player_merchant_id,
+                        "name": player_name,
+                    },
+                    {"name": None},
+                    {"name": None},
+                    {"name": None},
+                ],
+            },
+        }
+
+        # Try Manager proxy PATCH (camelCase)
         try:
-            logger.info(f"Ensuring owner_id on match {match_id} via public PATCH")
+            logger.info(f"PATCH registrationInfo on {match_id} via Manager proxy")
+            r = await self.client.patch(
+                f"{MANAGER_API}/v1/matches/{match_id}",
+                headers=headers,
+                json=reg_payload,
+            )
+            logger.info(f"registrationInfo PATCH (Manager): {r.status_code} {r.text[:300]}")
+            if r.status_code in (200, 204):
+                logger.info(f"registrationInfo added OK via Manager proxy")
+                return
+        except Exception as e:
+            logger.warning(f"registrationInfo PATCH (Manager) exception: {e}")
+
+        # Try public API PATCH (snake_case)
+        try:
+            logger.info(f"PATCH registration_info on {match_id} via public API")
             r = await self.client.patch(
                 f"{PLAYTOMIC_API}/v1/matches/{match_id}",
                 headers=headers,
-                json={"owner_id": self.user_id},
+                json={
+                    "registration_info": {
+                        "payment_type": "SINGLE_PAYER",
+                        "registrations": [
+                            {
+                                "merchant_player_id": player_merchant_id,
+                                "name": player_name,
+                            },
+                        ],
+                    },
+                },
             )
-            logger.info(f"owner_id PATCH (Public): {r.status_code} {r.text[:300]}")
+            logger.info(f"registration_info PATCH (Public): {r.status_code} {r.text[:300]}")
             if r.status_code in (200, 204):
-                logger.info(f"owner_id set OK on match {match_id}")
+                logger.info(f"registration_info added OK via public API")
                 return
         except Exception as e:
-            logger.warning(f"owner_id PATCH exception: {e}")
+            logger.warning(f"registration_info PATCH (Public) exception: {e}")
 
-        logger.warning(f"Could not set owner_id on match {match_id}")
+        logger.warning(f"Could not add registrationInfo to match {match_id}")
 
     async def _search_customer_by_phone(
         self, headers: dict, phone: str
