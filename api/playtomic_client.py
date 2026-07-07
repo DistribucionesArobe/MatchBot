@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Config ───
 PLAYTOMIC_API = "https://api.playtomic.io"
+MANAGER_API = "https://manager.playtomic.io/api"  # Manager proxy — tokens from here include role claims
 TENANT_ID = os.getenv("PLAYTOMIC_TENANT_ID", "9350708e-5320-4e4c-a264-0f6aedefaf8b")
 PLAYTOMIC_EMAIL = os.getenv("PLAYTOMIC_EMAIL", "")
 PLAYTOMIC_PASSWORD = os.getenv("PLAYTOMIC_PASSWORD", "")
@@ -44,72 +45,92 @@ class PlaytomicClient:
 
     # ─── AUTH ───
     async def login(self) -> bool:
-        """Step 1: Authenticate with email/password → customer token + refresh token."""
+        """Step 1: Authenticate with email/password → customer token + refresh token.
+        Uses the Manager proxy auth endpoint so the token includes
+        role_tenant_manager / role_activity_manager claims needed for
+        Manager proxy booking creation (price calculation, etc.).
+        Falls back to public API if Manager proxy login fails.
+        """
         if not PLAYTOMIC_EMAIL or not PLAYTOMIC_PASSWORD:
             logger.error("PLAYTOMIC_EMAIL / PLAYTOMIC_PASSWORD not set")
             return False
 
-        try:
-            r = await self.client.post(
-                f"{PLAYTOMIC_API}/v3/auth/login",
-                json={"email": PLAYTOMIC_EMAIL, "password": PLAYTOMIC_PASSWORD},
-            )
-            if r.status_code == 200:
-                data = r.json()
-                self.token = data.get("access_token")
-                self.refresh_token = data.get("refresh_token")
-                self.user_id = data.get("user_id")
-                logger.info(f"Playtomic login OK — user_id: {self.user_id}")
-                return True
-            else:
-                logger.error(f"Playtomic login failed: {r.status_code} {r.text}")
-                return False
-        except Exception as e:
-            logger.error(f"Playtomic login error: {e}")
-            return False
+        # Try Manager proxy first (grants Manager role claims in token)
+        for base, label in [(MANAGER_API, "Manager proxy"), (PLAYTOMIC_API, "public API")]:
+            try:
+                logger.info(f"Attempting login via {label} ({base}/v3/auth/login)")
+                r = await self.client.post(
+                    f"{base}/v3/auth/login",
+                    json={"email": PLAYTOMIC_EMAIL, "password": PLAYTOMIC_PASSWORD},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    self.token = data.get("access_token")
+                    self.refresh_token = data.get("refresh_token")
+                    self.user_id = data.get("user_id")
+                    logger.info(f"Playtomic login OK via {label} — user_id: {self.user_id}")
+                    return True
+                else:
+                    logger.warning(f"Login via {label} failed: {r.status_code} {r.text[:300]}")
+            except Exception as e:
+                logger.warning(f"Login via {label} error: {e}")
+
+        logger.error("Playtomic login failed via all endpoints")
+        return False
 
     async def get_tenant_token(self) -> bool:
         """Step 2: Exchange refresh_token for a tenant-scoped access token.
-        Requests audience 'com.playtomic.manager' so the token is accepted
-        by the Manager proxy (manager.playtomic.io/api). Without this
-        audience, the proxy returns 403 MISSING_PERMISSIONS.
+        Uses Manager proxy endpoint so the returned token includes
+        role_tenant_manager / role_activity_manager claims needed for
+        Manager-proxy booking creation (price calculation, payment info).
+        Falls back to public API if Manager proxy fails.
         """
         if not self.refresh_token:
             logger.error("No refresh token available for tenant token exchange")
             return False
 
-        # Try with Manager audience first (grants full Manager proxy access)
-        for audience in ["com.playtomic.manager", None]:
-            try:
-                payload = {
-                    "grant_type": "refresh_token",
-                    "refresh_token": self.refresh_token,
-                    "scope": f"tenant:{TENANT_ID}",
-                }
-                if audience:
-                    payload["audience"] = audience
+        # Try Manager proxy first, then public API.
+        # Manager proxy adds role claims; public API does not.
+        endpoints = [
+            (MANAGER_API, "Manager proxy"),
+            (PLAYTOMIC_API, "public API"),
+        ]
 
-                label = f"audience={audience}" if audience else "no audience"
-                logger.info(f"Requesting tenant token ({label})")
-                r = await self.client.post(
-                    f"{PLAYTOMIC_API}/v3/auth/token",
-                    json=payload,
-                )
+        for base, label in endpoints:
+            for audience in ["com.playtomic.manager", None]:
+                try:
+                    payload = {
+                        "grant_type": "refresh_token",
+                        "refresh_token": self.refresh_token,
+                        "scope": f"tenant:{TENANT_ID}",
+                    }
+                    if audience:
+                        payload["audience"] = audience
 
-                if r.status_code == 200:
-                    data = r.json()
-                    self.tenant_token = data.get("access_token")
-                    new_rt = data.get("refresh_token")
-                    if new_rt:
-                        self.refresh_token = new_rt
-                    logger.info(f"Tenant token obtained OK ({label})")
-                    return True
-                else:
-                    logger.warning(f"Tenant token ({label}) failed: {r.status_code} {r.text[:200]}")
-            except Exception as e:
-                logger.warning(f"Tenant token ({label}) error: {e}")
+                    aud_label = f"audience={audience}" if audience else "no audience"
+                    logger.info(f"Requesting tenant token via {label} ({aud_label})")
+                    r = await self.client.post(
+                        f"{base}/v3/auth/token",
+                        json=payload,
+                    )
 
-        logger.error("Could not obtain tenant token with any audience")
+                    if r.status_code == 200:
+                        data = r.json()
+                        self.tenant_token = data.get("access_token")
+                        new_rt = data.get("refresh_token")
+                        if new_rt:
+                            self.refresh_token = new_rt
+                        logger.info(f"Tenant token obtained OK via {label} ({aud_label})")
+                        return True
+                    else:
+                        logger.warning(
+                            f"Tenant token via {label} ({aud_label}) failed: "
+                            f"{r.status_code} {r.text[:300]}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Tenant token via {label} ({aud_label}) error: {e}")
+
+        logger.error("Could not obtain tenant token via any endpoint/audience")
         return False
 
     async def ensure_auth(self):
