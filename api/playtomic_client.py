@@ -70,36 +70,47 @@ class PlaytomicClient:
 
     async def get_tenant_token(self) -> bool:
         """Step 2: Exchange refresh_token for a tenant-scoped access token.
-        This is required for manager operations (creating bookings).
+        Requests audience 'com.playtomic.manager' so the token is accepted
+        by the Manager proxy (manager.playtomic.io/api). Without this
+        audience, the proxy returns 403 MISSING_PERMISSIONS.
         """
         if not self.refresh_token:
             logger.error("No refresh token available for tenant token exchange")
             return False
 
-        try:
-            r = await self.client.post(
-                f"{PLAYTOMIC_API}/v3/auth/token",
-                json={
+        # Try with Manager audience first (grants full Manager proxy access)
+        for audience in ["com.playtomic.manager", None]:
+            try:
+                payload = {
                     "grant_type": "refresh_token",
                     "refresh_token": self.refresh_token,
                     "scope": f"tenant:{TENANT_ID}",
-                },
-            )
-            if r.status_code == 200:
-                data = r.json()
-                self.tenant_token = data.get("access_token")
-                # The exchange may return a new refresh token
-                new_rt = data.get("refresh_token")
-                if new_rt:
-                    self.refresh_token = new_rt
-                logger.info("Tenant token obtained OK")
-                return True
-            else:
-                logger.error(f"Tenant token exchange failed: {r.status_code} {r.text}")
-                return False
-        except Exception as e:
-            logger.error(f"Tenant token exchange error: {e}")
-            return False
+                }
+                if audience:
+                    payload["audience"] = audience
+
+                label = f"audience={audience}" if audience else "no audience"
+                logger.info(f"Requesting tenant token ({label})")
+                r = await self.client.post(
+                    f"{PLAYTOMIC_API}/v3/auth/token",
+                    json=payload,
+                )
+
+                if r.status_code == 200:
+                    data = r.json()
+                    self.tenant_token = data.get("access_token")
+                    new_rt = data.get("refresh_token")
+                    if new_rt:
+                        self.refresh_token = new_rt
+                    logger.info(f"Tenant token obtained OK ({label})")
+                    return True
+                else:
+                    logger.warning(f"Tenant token ({label}) failed: {r.status_code} {r.text[:200]}")
+            except Exception as e:
+                logger.warning(f"Tenant token ({label}) error: {e}")
+
+        logger.error("Could not obtain tenant token with any audience")
+        return False
 
     async def ensure_auth(self):
         """Ensure we have a valid customer token."""
