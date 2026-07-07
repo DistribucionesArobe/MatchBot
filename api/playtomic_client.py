@@ -479,24 +479,24 @@ class PlaytomicClient:
             player_type = "GUEST"
 
         # ── Attempt 1: Create via Manager proxy with full payload ──
-        # The Manager uses camelCase and includes registrationInfo in the
-        # creation call. This is the ideal path — produces a booking
-        # identical to one created from the Manager UI.
+        # The Manager proxy uses snake_case (NOT camelCase). Including
+        # registration_info triggers automatic price calculation on the
+        # server, producing a booking identical to ones created from the
+        # Manager UI — with the Payment section visible.
         manager_payload = {
-            "sportId": "PADEL",
-            "tenantId": TENANT_ID,
-            "resourceId": resource_id,
-            "startDate": start_time,
-            "endDate": end_time,
+            "sport_id": "PADEL",
+            "tenant_id": TENANT_ID,
+            "resource_id": resource_id,
+            "start_date": start_time,
+            "end_date": end_time,
             "visibility": "HIDDEN",
-            "isPlaytomicManaged": False,
-            "maxPlayersPerTeam": 2,
-            "ownerId": existing["user_id"] if existing and player_type == "CUSTOMER" else None,
-            "registrationInfo": {
-                "paymentType": "SINGLE_PAYER",
+            "is_playtomic_managed": False,
+            "max_players_per_team": 2,
+            "registration_info": {
+                "payment_type": "SINGLE_PAYER",
                 "registrations": [
                     {
-                        "merchantPlayerId": player_merchant_id,
+                        "merchant_player_id": player_merchant_id,
                         "name": player_display_name,
                     },
                     {"name": None},
@@ -504,8 +504,6 @@ class PlaytomicClient:
                     {"name": None},
                 ],
             },
-            "description": None,
-            "privateNotes": None,
         }
 
         try:
