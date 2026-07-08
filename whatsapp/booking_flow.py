@@ -487,16 +487,17 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             customer_name = data.get("customer_name", "")
             customer_phone = data.get("customer_phone", to)
 
+            price = data["price_cents"] / 100
             result = await playtomic.create_booking(
                 resource_id=data["resource_id"],
                 start_time=data.get("start_iso", ""),
                 duration=data.get("duration", 90),
                 customer_name=customer_name,
                 customer_phone=customer_phone,
+                slot_price=price,
             )
 
             _set_state(club_id, to, "idle", {})
-            price = data["price_cents"] / 100
 
             # Format date nicely
             try:
@@ -586,16 +587,17 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
         customer_name = data.get("customer_name", "")
         customer_phone = data.get("customer_phone", to)
 
+        price = data["price_cents"] / 100
         result = await playtomic.create_booking(
             resource_id=data["resource_id"],
             start_time=data.get("start_iso", ""),
             duration=data.get("duration", 90),
             customer_name=customer_name,
             customer_phone=customer_phone,
+            slot_price=price,
         )
 
         _set_state(club_id, to, "idle", {})
-        price = data["price_cents"] / 100
         method_labels = {"cash": "Efectivo en club", "transfer": "Transferencia", "card": "Tarjeta"}
 
         # Format date nicely

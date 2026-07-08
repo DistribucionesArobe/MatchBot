@@ -473,6 +473,7 @@ class PlaytomicClient:
         duration: int = 90,
         customer_name: str = "",
         customer_phone: str = "",
+        slot_price: float = 0.0,
     ) -> dict:
         """
         Create a booking on Playtomic as the club manager.
@@ -536,6 +537,18 @@ class PlaytomicClient:
         start_date_z = start_time.rstrip("Z") + "Z" if not start_time.endswith("Z") else start_time
         end_date_z = end_time.rstrip("Z") + "Z" if not end_time.endswith("Z") else end_time
 
+        # Build price string for Playtomic (e.g. "300 MXN")
+        price_str = f"{int(slot_price)} MXN" if slot_price > 0 else None
+
+        # Build the first registration entry with price included
+        first_registration = {
+            "merchant_player_id": player_merchant_id,
+            "name": player_display_name,
+        }
+        if price_str:
+            first_registration["price"] = price_str
+            first_registration["paid"] = False
+
         manager_payload = {
             "sport_id": "PADEL",
             "tenant_id": TENANT_ID,
@@ -550,10 +563,7 @@ class PlaytomicClient:
             "registration_info": {
                 "payment_type": "SINGLE_PAYER",
                 "registrations": [
-                    {
-                        "merchant_player_id": player_merchant_id,
-                        "name": player_display_name,
-                    },
+                    first_registration,
                     {},
                     {},
                     {},
@@ -581,15 +591,15 @@ class PlaytomicClient:
             logger.warning(f"Manager proxy create exception: {e}, falling back to public API")
 
         # ── Attempt 2: Create via public API (fallback) ──
-        # Public API uses snake_case and doesn't support registrationInfo.
-        # Booking will be clickable (owner_id present) but without
-        # payment/price section in the Manager edit form.
+        # Include registration_info with price so the Manager UI shows the
+        # Payment section. The price is sent by the client, NOT calculated
+        # server-side.
         match_payload = {
             "sport_id": "PADEL",
             "tenant_id": TENANT_ID,
             "resource_id": resource_id,
-            "start_date": start_time,
-            "end_date": end_time,
+            "start_date": start_date_z,
+            "end_date": end_date_z,
             "match_type": "BOOKING",
             "match_organization": "TENANT",
             "visibility": "HIDDEN",
@@ -598,6 +608,15 @@ class PlaytomicClient:
             "min_players_per_team": 2,
             "max_players_per_team": 2,
             "owner_id": self.user_id,
+            "registration_info": {
+                "payment_type": "SINGLE_PAYER",
+                "registrations": [
+                    first_registration,
+                    {},
+                    {},
+                    {},
+                ],
+            },
         }
 
         try:
@@ -636,11 +655,8 @@ class PlaytomicClient:
                         match_id, headers, customer_name, customer_phone
                     )
 
-                # Try to PATCH registrationInfo onto the match
-                if match_id:
-                    await self._add_registration_info(
-                        match_id, headers, player_merchant_id, player_display_name
-                    )
+                # registration_info with price is now included in the POST
+                # payload, so no separate PATCH is needed.
 
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
