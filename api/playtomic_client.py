@@ -490,6 +490,9 @@ class PlaytomicClient:
         headers = {
             "Authorization": f"Bearer {self.tenant_token}",
             "Content-Type": "application/json",
+            # Manager proxy checks Origin/Referer — mimic browser headers
+            "Origin": "https://manager.playtomic.io",
+            "Referer": "https://manager.playtomic.io/",
         }
 
         # Calculate end_time from start + duration
