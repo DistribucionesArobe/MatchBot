@@ -537,17 +537,22 @@ class PlaytomicClient:
         start_date_z = start_time.rstrip("Z") + "Z" if not start_time.endswith("Z") else start_time
         end_date_z = end_time.rstrip("Z") + "Z" if not end_time.endswith("Z") else end_time
 
-        # Build price string for Playtomic (e.g. "300 MXN")
-        price_str = f"{int(slot_price)} MXN" if slot_price > 0 else None
+        # Build per-person price for split payment (4 players)
+        # e.g. 300 MXN total → 75 MXN per person
+        num_players = 4  # padel = 2 per team × 2 teams
+        per_person_price = f"{int(slot_price / num_players)} MXN" if slot_price > 0 else None
 
-        # Build the first registration entry with price included
+        # Build registration entries — all 4 get a price for split payment
         first_registration = {
             "merchant_player_id": player_merchant_id,
             "name": player_display_name,
         }
-        if price_str:
-            first_registration["price"] = price_str
+        empty_registration = {}
+
+        if per_person_price:
+            first_registration["price"] = per_person_price
             first_registration["paid"] = False
+            empty_registration = {"price": per_person_price, "paid": False}
 
         manager_payload = {
             "sport_id": "PADEL",
@@ -561,12 +566,12 @@ class PlaytomicClient:
             "description": None,
             "private_notes": None,
             "registration_info": {
-                "payment_type": "SINGLE_PAYER",
+                "payment_type": "SPLIT",
                 "registrations": [
                     first_registration,
-                    {},
-                    {},
-                    {},
+                    dict(empty_registration),
+                    dict(empty_registration),
+                    dict(empty_registration),
                 ],
             },
         }
@@ -609,12 +614,12 @@ class PlaytomicClient:
             "max_players_per_team": 2,
             "owner_id": self.user_id,
             "registration_info": {
-                "payment_type": "SINGLE_PAYER",
+                "payment_type": "SPLIT",
                 "registrations": [
                     first_registration,
-                    {},
-                    {},
-                    {},
+                    dict(empty_registration),
+                    dict(empty_registration),
+                    dict(empty_registration),
                 ],
             },
         }
