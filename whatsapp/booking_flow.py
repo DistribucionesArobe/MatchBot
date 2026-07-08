@@ -234,7 +234,7 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
             rows.append({
                 "id": f"time_{t}",
                 "title": f"🕐 {t}",
-                "description": f"{n} cancha{'s' if n > 1 else ''} desde ${min_price:.0f}",
+                "description": f"Total: ${min_price:.0f}",
             })
 
         sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
@@ -266,7 +266,7 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
         rows.append({
             "id": f"time_{t}",
             "title": f"🕐 {t} - {end}",
-            "description": f"{n} cancha{'s' if n > 1 else ''} desde ${min_price:.0f}",
+            "description": f"Total: ${min_price:.0f}",
         })
 
     sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
