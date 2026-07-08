@@ -490,9 +490,9 @@ class PlaytomicClient:
         headers = {
             "Authorization": f"Bearer {self.tenant_token}",
             "Content-Type": "application/json",
-            # Manager proxy checks Origin/Referer — mimic browser headers
-            "Origin": "https://manager.playtomic.io",
-            "Referer": "https://manager.playtomic.io/",
+            # Manager proxy requires these headers (intercepted from Manager UI)
+            "x-requested-with": "com.playtomic.manager",
+            "x-authorization-scope": f"tenant:{TENANT_ID}",
         }
 
         # Calculate end_time from start + duration
@@ -532,15 +532,21 @@ class PlaytomicClient:
         # registration_info triggers automatic price calculation on the
         # server, producing a booking identical to ones created from the
         # Manager UI — with the Payment section visible.
+        # Format dates with Z suffix like the Manager UI does
+        start_date_z = start_time.rstrip("Z") + "Z" if not start_time.endswith("Z") else start_time
+        end_date_z = end_time.rstrip("Z") + "Z" if not end_time.endswith("Z") else end_time
+
         manager_payload = {
             "sport_id": "PADEL",
             "tenant_id": TENANT_ID,
             "resource_id": resource_id,
-            "start_date": start_time,
-            "end_date": end_time,
+            "start_date": start_date_z,
+            "end_date": end_date_z,
             "visibility": "HIDDEN",
             "is_playtomic_managed": False,
             "max_players_per_team": 2,
+            "description": None,
+            "private_notes": None,
             "registration_info": {
                 "payment_type": "SINGLE_PAYER",
                 "registrations": [
@@ -548,9 +554,9 @@ class PlaytomicClient:
                         "merchant_player_id": player_merchant_id,
                         "name": player_display_name,
                     },
-                    {"name": None},
-                    {"name": None},
-                    {"name": None},
+                    {},
+                    {},
+                    {},
                 ],
             },
         }
