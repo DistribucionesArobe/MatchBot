@@ -18,6 +18,8 @@ import re
 import logging
 import uuid
 import time
+import base64
+import json as json_module
 from datetime import datetime, date, timedelta
 from typing import Optional
 
@@ -73,6 +75,13 @@ class PlaytomicClient:
                     self.refresh_token = data.get("refresh_token")
                     self.user_id = data.get("user_id")
                     logger.info(f"Playtomic login OK via {label} — user_id: {self.user_id}")
+                    # Debug: decode refresh token to check audience/claims
+                    try:
+                        rt_parts = self.refresh_token.split(".")
+                        rt_payload = json_module.loads(base64.b64decode(rt_parts[1] + "=="))
+                        logger.info(f"Login refresh_token claims: aud={rt_payload.get('aud')}, scopes={rt_payload.get('scopes')}")
+                    except Exception as e:
+                        logger.warning(f"Could not decode refresh_token: {e}")
                     return True
                 else:
                     logger.warning(f"Login via {label} failed: {r.status_code} {r.text[:300]}")
@@ -124,6 +133,18 @@ class PlaytomicClient:
                         new_rt = data.get("refresh_token")
                         if new_rt:
                             self.refresh_token = new_rt
+                        # Debug: decode tenant token to check role claims
+                        try:
+                            tt_parts = self.tenant_token.split(".")
+                            tt_payload = json_module.loads(base64.b64decode(tt_parts[1] + "=="))
+                            logger.info(
+                                f"Tenant token claims: aud={tt_payload.get('aud')}, "
+                                f"scopes={tt_payload.get('scopes')}, "
+                                f"has_role_tenant_manager={bool(tt_payload.get('role_tenant_manager'))}, "
+                                f"all_keys={list(tt_payload.keys())}"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Could not decode tenant_token: {e}")
                         logger.info(f"Tenant token obtained OK via {label} ({aud_label})")
                         return True
                     else:
