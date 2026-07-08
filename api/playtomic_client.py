@@ -305,13 +305,89 @@ class PlaytomicClient:
                 else:
                     logger.warning(f"Unexpected response type: {type(data)}")
                     logger.warning(f"Response: {str(data)[:500]}")
-                return self._parse_availability(data, date_str)
+                availability = self._parse_availability(data, date_str)
+
+                # Cross-reference with existing bookings to remove
+                # slots that are already reserved (the availability API
+                # sometimes still returns booked slots).
+                try:
+                    existing = await self.list_matches(date_str)
+                    if existing:
+                        availability = self._filter_booked_slots(
+                            availability, existing
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not filter booked slots: {e}")
+
+                return availability
             else:
                 logger.error(f"Availability error: {r.status_code} {r.text[:500]}")
                 return []
         except Exception as e:
             logger.error(f"Availability error: {e}")
             return []
+
+    def _filter_booked_slots(self, availability: list, bookings: list) -> list:
+        """Remove slots that overlap with existing bookings.
+        Each booking has resource_id, start_date, end_date (UTC ISO).
+        Each slot has resource_id, start (UTC ISO), duration (minutes).
+        """
+        # Build a list of (resource_id, start_dt, end_dt) from bookings
+        booked_ranges = []
+        for b in bookings:
+            rid = b.get("resource_id", "")
+            sd = b.get("start_date", b.get("start", ""))
+            ed = b.get("end_date", b.get("end", ""))
+            status = b.get("status", "")
+            # Skip cancelled bookings
+            if status in ("CANCELLED", "REJECTED"):
+                continue
+            if rid and sd and ed:
+                try:
+                    s = datetime.fromisoformat(sd.replace("Z", ""))
+                    e = datetime.fromisoformat(ed.replace("Z", ""))
+                    booked_ranges.append((rid, s, e))
+                except (ValueError, TypeError):
+                    pass
+
+        if not booked_ranges:
+            return availability
+
+        logger.info(f"Filtering availability against {len(booked_ranges)} existing bookings")
+
+        filtered = []
+        for court in availability:
+            court_rid = court.get("resource_id", "")
+            kept_slots = []
+            for slot in court.get("slots", []):
+                slot_start_str = slot.get("start", "")
+                slot_dur = slot.get("duration", 90)
+                try:
+                    slot_start = datetime.fromisoformat(slot_start_str.replace("Z", ""))
+                    slot_end = slot_start + timedelta(minutes=slot_dur)
+                except (ValueError, TypeError):
+                    kept_slots.append(slot)
+                    continue
+
+                # Check overlap with any booking on the same court
+                is_booked = False
+                for b_rid, b_start, b_end in booked_ranges:
+                    if b_rid == court_rid:
+                        # Overlap: slot_start < booking_end AND slot_end > booking_start
+                        if slot_start < b_end and slot_end > b_start:
+                            is_booked = True
+                            break
+
+                if not is_booked:
+                    kept_slots.append(slot)
+
+            if kept_slots:
+                filtered.append({**court, "slots": kept_slots})
+
+        removed = sum(len(c["slots"]) for c in availability) - sum(len(c["slots"]) for c in filtered)
+        if removed:
+            logger.info(f"Filtered out {removed} already-booked slots")
+        return filtered
 
     def _parse_availability(self, data: list, target_local_date: str) -> list:
         """Parse raw Playtomic availability response.
