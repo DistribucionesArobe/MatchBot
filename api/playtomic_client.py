@@ -44,6 +44,7 @@ class PlaytomicClient:
         self.user_id: Optional[str] = None
         self.client = httpx.AsyncClient(timeout=15.0)
         self._resource_names: dict[str, str] = {}  # resource_id → display name cache
+        self._resource_sports: dict[str, str] = {}  # resource_id → sport_id cache
 
     # ─── AUTH ───
     async def login(self) -> bool:
@@ -192,8 +193,10 @@ class PlaytomicClient:
                 for res in resources:
                     rid = res.get("resource_id", res.get("id", ""))
                     name = res.get("name", res.get("resource_name", ""))
+                    sport = res.get("sport_id", "PADEL")
                     if rid and name:
                         self._resource_names[rid] = name
+                        self._resource_sports[rid] = sport
 
                 logger.info(f"Method 1: loaded {len(self._resource_names)} names: {list(self._resource_names.values())}")
         except Exception as e:
@@ -209,8 +212,10 @@ class PlaytomicClient:
                         for res in resources:
                             rid = res.get("resource_id", res.get("id", ""))
                             name = res.get("name", res.get("resource_name", ""))
+                            sport = res.get("sport_id", "PADEL")
                             if rid and name:
                                 self._resource_names[rid] = name
+                                self._resource_sports[rid] = sport
                     logger.info(f"Method 2: loaded {len(self._resource_names)} names: {list(self._resource_names.values())}")
                 else:
                     logger.warning(f"Resources endpoint: {r.status_code} {r.text[:200]}")
@@ -282,47 +287,48 @@ class PlaytomicClient:
         utc_end = f"{next_day}T{offset_h:02d}:00:00"
 
         try:
-            params = {
-                "user_id": "me",
-                "sport_id": "PADEL",
-                "tenant_id": TENANT_ID,
-                "local_start_min": f"{date_str}T00:00:00",
-                "local_start_max": f"{date_str}T23:59:59",
-                "start_min": utc_start,
-                "start_max": utc_end,
-            }
-            logger.info(f"Querying availability: date={date_str}, UTC range={utc_start} to {utc_end}")
-            r = await self.client.get(
-                f"{PLAYTOMIC_API}/v1/availability",
-                params=params,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, list):
-                    logger.info(f"Availability: {len(data)} items returned")
-                    if data:
-                        logger.info(f"Sample keys: {list(data[0].keys())}")
+            # Query availability for all sports (PADEL + FOOTBALL7)
+            all_data = []
+            for sport in ["PADEL", "FOOTBALL7"]:
+                params = {
+                    "user_id": "me",
+                    "sport_id": sport,
+                    "tenant_id": TENANT_ID,
+                    "local_start_min": f"{date_str}T00:00:00",
+                    "local_start_max": f"{date_str}T23:59:59",
+                    "start_min": utc_start,
+                    "start_max": utc_end,
+                }
+                logger.info(f"Querying {sport} availability: date={date_str}")
+                r = await self.client.get(
+                    f"{PLAYTOMIC_API}/v1/availability",
+                    params=params,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list):
+                        logger.info(f"{sport} availability: {len(data)} items")
+                        all_data.extend(data)
                 else:
-                    logger.warning(f"Unexpected response type: {type(data)}")
-                    logger.warning(f"Response: {str(data)[:500]}")
-                availability = self._parse_availability(data, date_str)
+                    logger.warning(f"{sport} availability error: {r.status_code}")
 
-                # Cross-reference with existing bookings to remove
-                # slots that are already reserved (the availability API
-                # sometimes still returns booked slots).
-                try:
-                    existing = await self.list_matches(date_str)
-                    if existing:
-                        availability = self._filter_booked_slots(
-                            availability, existing
-                        )
-                except Exception as e:
-                    logger.warning(f"Could not filter booked slots: {e}")
+            data = all_data
+            logger.info(f"Total availability: {len(data)} items (all sports)")
+            availability = self._parse_availability(data, date_str)
 
-                return availability
-            else:
-                logger.error(f"Availability error: {r.status_code} {r.text[:500]}")
-                return []
+            # Cross-reference with existing bookings to remove
+            # slots that are already reserved (the availability API
+            # sometimes still returns booked slots).
+            try:
+                existing = await self.list_matches(date_str)
+                if existing:
+                    availability = self._filter_booked_slots(
+                        availability, existing
+                    )
+            except Exception as e:
+                logger.warning(f"Could not filter booked slots: {e}")
+
+            return availability
         except Exception as e:
             logger.error(f"Availability error: {e}")
             return []
@@ -525,16 +531,39 @@ class PlaytomicClient:
         if not availability:
             return f"No hay canchas disponibles para el {date_str}."
 
-        lines = [f"🎾 *Canchas disponibles — {date_str}*\n"]
-
+        # Separate padel and football courts
+        padel_courts = []
+        football_courts = []
         for court in availability:
-            lines.append(f"*{court['name']}*")
-            slot_texts = []
-            for slot in court["slots"]:
-                price_str = f"${slot['price']}" if slot['price'] else ""
-                slot_texts.append(f"  {slot['time']} ({slot['duration']}min) {price_str}")
-            lines.append("\n".join(slot_texts))
-            lines.append("")
+            rid = court.get("resource_id", "")
+            sport = self._resource_sports.get(rid, "PADEL")
+            if sport == "FOOTBALL7":
+                football_courts.append(court)
+            else:
+                padel_courts.append(court)
+
+        lines = []
+        if padel_courts:
+            lines.append(f"🎾 *Canchas de Padel — {date_str}*\n")
+            for court in padel_courts:
+                lines.append(f"*{court['name']}*")
+                slot_texts = []
+                for slot in court["slots"]:
+                    price_str = f"${slot['price']}" if slot['price'] else ""
+                    slot_texts.append(f"  {slot['time']} ({slot['duration']}min) {price_str}")
+                lines.append("\n".join(slot_texts))
+                lines.append("")
+
+        if football_courts:
+            lines.append(f"⚽ *Canchas de Fútbol — {date_str}*\n")
+            for court in football_courts:
+                lines.append(f"*{court['name']}*")
+                slot_texts = []
+                for slot in court["slots"]:
+                    price_str = f"${slot['price']}" if slot['price'] else ""
+                    slot_texts.append(f"  {slot['time']} ({slot['duration']}min) {price_str}")
+                lines.append("\n".join(slot_texts))
+                lines.append("")
 
         lines.append("Responde con el número de cancha y la hora.")
         lines.append("Ejemplo: *Cancha 1 18:00*")
@@ -582,6 +611,13 @@ class PlaytomicClient:
 
         MANAGER_API = "https://manager.playtomic.io/api"
 
+        # Detect sport from resource_id
+        sport_id = self._resource_sports.get(resource_id, "PADEL")
+        is_football = sport_id == "FOOTBALL7"
+        # Padel: 2 per team × 2 = 4 players; Football 7: 7 per team × 2 = 14
+        max_per_team = 7 if is_football else 2
+        num_players = max_per_team * 2
+
         # Build player info for registration
         player_merchant_id = None
         player_display_name = customer_name or "WhatsApp"
@@ -613,9 +649,8 @@ class PlaytomicClient:
         start_date_z = start_time.rstrip("Z") + "Z" if not start_time.endswith("Z") else start_time
         end_date_z = end_time.rstrip("Z") + "Z" if not end_time.endswith("Z") else end_time
 
-        # Build per-person price for split payment (4 players)
-        # e.g. 300 MXN total → 75 MXN per person
-        num_players = 4  # padel = 2 per team × 2 teams
+        # Build per-person price for split payment
+        # Padel: 300/4 = 75 MXN per person; Football: price/14 per person
         per_person_price = f"{int(slot_price / num_players)} MXN" if slot_price > 0 else None
 
         # Build registration entries — all 4 get a price for split payment
@@ -630,30 +665,28 @@ class PlaytomicClient:
             first_registration["paid"] = False
             empty_registration = {"price": per_person_price, "paid": False}
 
+        # Build registrations list: first player + (num_players - 1) empty slots
+        registrations = [first_registration] + [dict(empty_registration) for _ in range(num_players - 1)]
+
         manager_payload = {
-            "sport_id": "PADEL",
+            "sport_id": sport_id,
             "tenant_id": TENANT_ID,
             "resource_id": resource_id,
             "start_date": start_date_z,
             "end_date": end_date_z,
             "visibility": "HIDDEN",
             "is_playtomic_managed": False,
-            "max_players_per_team": 2,
+            "max_players_per_team": max_per_team,
             "description": None,
             "private_notes": None,
             "registration_info": {
                 "payment_type": "SPLIT",
-                "registrations": [
-                    first_registration,
-                    dict(empty_registration),
-                    dict(empty_registration),
-                    dict(empty_registration),
-                ],
+                "registrations": registrations,
             },
         }
 
         try:
-            logger.info(f"Creating booking via Manager proxy: {resource_id} at {start_time}")
+            logger.info(f"Creating {sport_id} booking via Manager proxy: {resource_id} at {start_time}")
             r = await self.client.post(
                 f"{MANAGER_API}/v1/matches",
                 headers=headers,
@@ -676,7 +709,7 @@ class PlaytomicClient:
         # Payment section. The price is sent by the client, NOT calculated
         # server-side.
         match_payload = {
-            "sport_id": "PADEL",
+            "sport_id": sport_id,
             "tenant_id": TENANT_ID,
             "resource_id": resource_id,
             "start_date": start_date_z,
@@ -686,22 +719,17 @@ class PlaytomicClient:
             "visibility": "HIDDEN",
             "match_origin": "PLAYTOMIC_MANAGER",
             "competition_mode": "COMPETITIVE",
-            "min_players_per_team": 2,
-            "max_players_per_team": 2,
+            "min_players_per_team": max_per_team,
+            "max_players_per_team": max_per_team,
             "owner_id": self.user_id,
             "registration_info": {
                 "payment_type": "SPLIT",
-                "registrations": [
-                    first_registration,
-                    dict(empty_registration),
-                    dict(empty_registration),
-                    dict(empty_registration),
-                ],
+                "registrations": registrations,
             },
         }
 
         try:
-            logger.info(f"Creating booking via public API: {resource_id} at {start_time} for '{customer_name}'")
+            logger.info(f"Creating {sport_id} booking via public API: {resource_id} at {start_time} for '{customer_name}'")
             r = await self.client.post(
                 f"{PLAYTOMIC_API}/v1/matches",
                 headers=headers,
