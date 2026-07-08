@@ -229,12 +229,11 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
         rows = []
         for t in sorted(time_slots.keys()):
             courts = time_slots[t]
-            n = len(courts)
             min_price = min(c["price"] for c in courts)
             rows.append({
                 "id": f"time_{t}",
                 "title": f"🕐 {t}",
-                "description": f"{n} cancha{'s' if n > 1 else ''} desde ${min_price:.0f}",
+                "description": f"Cancha ${min_price:.0f} MXN",
             })
 
         sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
@@ -260,13 +259,12 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
     rows = []
     for t in sorted(summary.keys()):
         courts = summary[t]
-        n = len(courts)
         min_price = min(c["price_cents"] for c in courts) / 100
         end = courts[0]["end_time"]
         rows.append({
             "id": f"time_{t}",
             "title": f"🕐 {t} - {end}",
-            "description": f"{n} cancha{'s' if n > 1 else ''} desde ${min_price:.0f}",
+            "description": f"Cancha ${min_price:.0f} MXN",
         })
 
     sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
