@@ -13,7 +13,7 @@ from collections import defaultdict
 
 from fastapi import FastAPI, Request, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 
 from config.settings import settings
 from db.database import init_db, execute
@@ -542,23 +542,31 @@ async def api_playtomic_debug(date: str = Query("2026-07-05")):
 # Health check
 # ─────────────────────────────────────────────────────
 
-@app.get("/stats")
+@app.get("/stats", response_class=HTMLResponse)
 async def bot_stats():
-    """Bot usage stats — unique users, bookings, activity."""
-    # Total unique users who have interacted with the bot
+    """Bot usage dashboard — visual stats page."""
+    # Total unique users
     total_users = execute(
         "SELECT COUNT(DISTINCT wa_phone) AS cnt FROM wa_booking_state",
         fetch_one=True,
     )
-    # Users active in the last 7 days
+    # Active last 7 days
     active_7d = execute(
         "SELECT COUNT(DISTINCT wa_phone) AS cnt FROM wa_booking_state WHERE updated_at >= NOW() - INTERVAL '7 days'",
         fetch_one=True,
     )
-    # Users active today
+    # Active today
     active_today = execute(
         "SELECT COUNT(DISTINCT wa_phone) AS cnt FROM wa_booking_state WHERE updated_at::date = CURRENT_DATE",
         fetch_one=True,
+    )
+    # Daily activity last 14 days
+    daily_activity = execute(
+        """SELECT updated_at::date AS dia, COUNT(DISTINCT wa_phone) AS usuarios
+           FROM wa_booking_state
+           WHERE updated_at >= NOW() - INTERVAL '14 days'
+           GROUP BY dia ORDER BY dia""",
+        fetch_all=True,
     )
     # Recent users (last 20)
     recent = execute(
@@ -571,22 +579,136 @@ async def bot_stats():
            LIMIT 20""",
         fetch_all=True,
     )
-    # Format recent list
-    users_list = []
-    for r in (recent or []):
-        users_list.append({
-            "phone": r["wa_phone"][-4:],  # last 4 digits only for privacy
-            "name": r.get("nombre") or "—",
-            "state": r["state"],
-            "last_active": str(r["updated_at"]),
-        })
 
-    return {
-        "total_users": total_users["cnt"] if total_users else 0,
-        "active_last_7_days": active_7d["cnt"] if active_7d else 0,
-        "active_today": active_today["cnt"] if active_today else 0,
-        "recent_users": users_list,
+    n_total = total_users["cnt"] if total_users else 0
+    n_7d = active_7d["cnt"] if active_7d else 0
+    n_today = active_today["cnt"] if active_today else 0
+
+    # Build chart data
+    chart_labels = []
+    chart_values = []
+    for row in (daily_activity or []):
+        chart_labels.append(str(row["dia"])[5:])  # MM-DD
+        chart_values.append(row["usuarios"])
+
+    # Build table rows
+    table_rows = ""
+    state_labels = {
+        "idle": ("Inactivo", "#6b7280"),
+        "choosing_date": ("Eligiendo fecha", "#f59e0b"),
+        "choosing_time": ("Eligiendo hora", "#f59e0b"),
+        "choosing_court": ("Eligiendo cancha", "#f59e0b"),
+        "confirming": ("Confirmando", "#3b82f6"),
+        "choosing_payment": ("Pagando", "#8b5cf6"),
     }
+    for r in (recent or []):
+        phone = r["wa_phone"][-4:]
+        name = r.get("nombre") or "—"
+        st = r["state"]
+        label, color = state_labels.get(st, (st, "#6b7280"))
+        ts = str(r["updated_at"])[:16]
+        table_rows += f"""
+        <tr>
+          <td>{name}</td>
+          <td>***{phone}</td>
+          <td><span class="badge" style="background:{color}">{label}</span></td>
+          <td>{ts}</td>
+        </tr>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MatchBot - Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#0f172a; color:#e2e8f0; min-height:100vh; }}
+  .header {{ background:linear-gradient(135deg,#1e3a5f,#0f172a); padding:24px 32px; border-bottom:1px solid #1e293b; }}
+  .header h1 {{ font-size:24px; color:#fff; }}
+  .header p {{ color:#94a3b8; font-size:14px; margin-top:4px; }}
+  .container {{ max-width:960px; margin:0 auto; padding:24px 16px; }}
+  .cards {{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:32px; }}
+  .card {{ background:#1e293b; border-radius:12px; padding:24px; text-align:center; border:1px solid #334155; }}
+  .card .number {{ font-size:42px; font-weight:700; }}
+  .card .label {{ font-size:13px; color:#94a3b8; margin-top:6px; text-transform:uppercase; letter-spacing:1px; }}
+  .card.green .number {{ color:#22c55e; }}
+  .card.blue .number {{ color:#3b82f6; }}
+  .card.yellow .number {{ color:#f59e0b; }}
+  .section {{ background:#1e293b; border-radius:12px; padding:24px; margin-bottom:24px; border:1px solid #334155; }}
+  .section h2 {{ font-size:16px; color:#fff; margin-bottom:16px; }}
+  table {{ width:100%; border-collapse:collapse; }}
+  th {{ text-align:left; font-size:12px; color:#64748b; text-transform:uppercase; letter-spacing:1px; padding:8px 12px; border-bottom:1px solid #334155; }}
+  td {{ padding:10px 12px; border-bottom:1px solid #1e293b; font-size:14px; }}
+  tr:hover {{ background:#334155; }}
+  .badge {{ padding:3px 10px; border-radius:12px; font-size:11px; color:#fff; font-weight:500; }}
+  canvas {{ max-height:220px; }}
+  @media(max-width:600px) {{
+    .cards {{ grid-template-columns:1fr; }}
+    .card .number {{ font-size:32px; }}
+  }}
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>MatchBot Dashboard</h1>
+    <p>Club de Padel Victoria</p>
+  </div>
+  <div class="container">
+    <div class="cards">
+      <div class="card green">
+        <div class="number">{n_total}</div>
+        <div class="label">Usuarios totales</div>
+      </div>
+      <div class="card blue">
+        <div class="number">{n_7d}</div>
+        <div class="label">Activos (7 dias)</div>
+      </div>
+      <div class="card yellow">
+        <div class="number">{n_today}</div>
+        <div class="label">Activos hoy</div>
+      </div>
+    </div>
+    <div class="section">
+      <h2>Actividad diaria (ultimos 14 dias)</h2>
+      <canvas id="chart"></canvas>
+    </div>
+    <div class="section">
+      <h2>Usuarios recientes</h2>
+      <table>
+        <thead><tr><th>Nombre</th><th>Tel</th><th>Estado</th><th>Ultima actividad</th></tr></thead>
+        <tbody>{table_rows}</tbody>
+      </table>
+    </div>
+  </div>
+  <script>
+    new Chart(document.getElementById('chart'), {{
+      type: 'bar',
+      data: {{
+        labels: {json.dumps(chart_labels)},
+        datasets: [{{
+          label: 'Usuarios activos',
+          data: {json.dumps(chart_values)},
+          backgroundColor: 'rgba(34,197,94,0.6)',
+          borderColor: '#22c55e',
+          borderWidth: 1,
+          borderRadius: 6,
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        plugins: {{ legend: {{ display: false }} }},
+        scales: {{
+          y: {{ beginAtZero: true, ticks: {{ stepSize: 1, color: '#64748b' }}, grid: {{ color: '#1e293b' }} }},
+          x: {{ ticks: {{ color: '#64748b' }}, grid: {{ display: false }} }}
+        }}
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 @app.get("/health")
