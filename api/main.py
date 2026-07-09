@@ -542,6 +542,53 @@ async def api_playtomic_debug(date: str = Query("2026-07-05")):
 # Health check
 # ─────────────────────────────────────────────────────
 
+@app.get("/stats")
+async def bot_stats():
+    """Bot usage stats — unique users, bookings, activity."""
+    # Total unique users who have interacted with the bot
+    total_users = execute(
+        "SELECT COUNT(DISTINCT wa_phone) AS cnt FROM wa_booking_state",
+        fetch_one=True,
+    )
+    # Users active in the last 7 days
+    active_7d = execute(
+        "SELECT COUNT(DISTINCT wa_phone) AS cnt FROM wa_booking_state WHERE updated_at >= NOW() - INTERVAL '7 days'",
+        fetch_one=True,
+    )
+    # Users active today
+    active_today = execute(
+        "SELECT COUNT(DISTINCT wa_phone) AS cnt FROM wa_booking_state WHERE updated_at::date = CURRENT_DATE",
+        fetch_one=True,
+    )
+    # Recent users (last 20)
+    recent = execute(
+        """SELECT wa_phone,
+                  data->>'customer_name' AS nombre,
+                  state,
+                  updated_at
+           FROM wa_booking_state
+           ORDER BY updated_at DESC
+           LIMIT 20""",
+        fetch_all=True,
+    )
+    # Format recent list
+    users_list = []
+    for r in (recent or []):
+        users_list.append({
+            "phone": r["wa_phone"][-4:],  # last 4 digits only for privacy
+            "name": r.get("nombre") or "—",
+            "state": r["state"],
+            "last_active": str(r["updated_at"]),
+        })
+
+    return {
+        "total_users": total_users["cnt"] if total_users else 0,
+        "active_last_7_days": active_7d["cnt"] if active_7d else 0,
+        "active_today": active_today["cnt"] if active_today else 0,
+        "recent_users": users_list,
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "app": "MatchBot", "version": "1.0.0"}
