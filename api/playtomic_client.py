@@ -26,8 +26,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ─── Config ───
-PLAYTOMIC_API = "https://api.playtomic.io"
-MANAGER_API = "https://manager.playtomic.io/api"  # Manager proxy — tokens from here include role claims
+PLAYTOMIC_API = "https://manager.playtomic.io/api"  # Manager proxy (api.playtomic.io blocked by CloudFront)
+MANAGER_API = "https://manager.playtomic.io/api"   # Same base — all calls go through Manager proxy
 TENANT_ID = os.getenv("PLAYTOMIC_TENANT_ID", "9350708e-5320-4e4c-a264-0f6aedefaf8b")
 PLAYTOMIC_EMAIL = os.getenv("PLAYTOMIC_EMAIL", "")
 PLAYTOMIC_PASSWORD = os.getenv("PLAYTOMIC_PASSWORD", "")

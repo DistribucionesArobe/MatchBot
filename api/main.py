@@ -481,7 +481,7 @@ async def api_playtomic_debug(date: str = Query(None)):
         date = local_now.strftime("%Y-%m-%d")
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
-    api = "https://api.playtomic.io"
+    api = "https://manager.playtomic.io/api"
     results = {"date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
