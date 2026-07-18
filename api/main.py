@@ -490,6 +490,28 @@ async def api_playtomic_debug(date: str = Query(None)):
     results["bot_resource_names"] = playtomic._resource_names
     results["bot_resource_sports"] = playtomic._resource_sports
 
+    # Try login now if not logged in
+    if not playtomic.token:
+        try:
+            login_url = f"{api}/v3/auth/login"
+            login_r = await playtomic.client.post(login_url, json={
+                "email": os.getenv("PLAYTOMIC_EMAIL", ""),
+                "password": "***",  # masked
+            })
+            results["login_test"] = {
+                "url": login_url,
+                "status": login_r.status_code,
+                "response": login_r.text[:300],
+                "email_set": bool(os.getenv("PLAYTOMIC_EMAIL")),
+                "password_set": bool(os.getenv("PLAYTOMIC_PASSWORD")),
+            }
+            # Also try the real login
+            login_ok = await playtomic.login()
+            results["login_retry"] = login_ok
+            results["bot_logged_in_after_retry"] = playtomic.token is not None
+        except Exception as e:
+            results["login_test_error"] = str(e)
+
     # Test availability via bot's own method
     try:
         bot_avail = await playtomic.get_availability(date)
