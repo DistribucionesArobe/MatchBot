@@ -288,29 +288,34 @@ class PlaytomicClient:
 
         try:
             # Query availability for all sports (PADEL + FOOTBALL7)
+            # Each sport is wrapped in its own try/except so a failure
+            # in one sport doesn't kill the other.
             all_data = []
             for sport in ["PADEL", "FOOTBALL7"]:
-                params = {
-                    "user_id": "me",
-                    "sport_id": sport,
-                    "tenant_id": TENANT_ID,
-                    "local_start_min": f"{date_str}T00:00:00",
-                    "local_start_max": f"{date_str}T23:59:59",
-                    "start_min": utc_start,
-                    "start_max": utc_end,
-                }
-                logger.info(f"Querying {sport} availability: date={date_str}")
-                r = await self.client.get(
-                    f"{PLAYTOMIC_API}/v1/availability",
-                    params=params,
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    if isinstance(data, list):
-                        logger.info(f"{sport} availability: {len(data)} items")
-                        all_data.extend(data)
-                else:
-                    logger.warning(f"{sport} availability error: {r.status_code}")
+                try:
+                    params = {
+                        "user_id": "me",
+                        "sport_id": sport,
+                        "tenant_id": TENANT_ID,
+                        "local_start_min": f"{date_str}T00:00:00",
+                        "local_start_max": f"{date_str}T23:59:59",
+                        "start_min": utc_start,
+                        "start_max": utc_end,
+                    }
+                    logger.info(f"Querying {sport} availability: date={date_str}")
+                    r = await self.client.get(
+                        f"{PLAYTOMIC_API}/v1/availability",
+                        params=params,
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, list):
+                            logger.info(f"{sport} availability: {len(data)} items")
+                            all_data.extend(data)
+                    else:
+                        logger.warning(f"{sport} availability error: {r.status_code}")
+                except Exception as e:
+                    logger.warning(f"{sport} availability query failed: {e}")
 
             data = all_data
             logger.info(f"Total availability: {len(data)} items (all sports)")
