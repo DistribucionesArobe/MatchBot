@@ -64,7 +64,17 @@ GREETINGS = {"hola", "hi", "hello", "buenas", "buenos dias", "buenas tardes", "q
 BOOK_TRIGGERS = {"reservar", "reserva", "resevar", "resservar", "cancha", "jugar", "booking", "book"}
 CANCEL_TRIGGERS = {"cancelar", "cancela", "cancel"}
 MY_BOOKINGS_TRIGGERS = {"mis reservas", "mis reservaciones", "my bookings", "mis partidos"}
-MENU_TRIGGERS = {"menu", "menú", "opciones", "ayuda", "help"}
+MENU_TRIGGERS = {"menu", "menú", "opciones", "ayuda", "help", "salir", "inicio", "volver"}
+
+
+def _matches_any(text: str, triggers: set) -> bool:
+    """Check if text matches any trigger — exact match OR contains a trigger word."""
+    if text in triggers:
+        return True
+    for word in text.split():
+        if word in triggers:
+            return True
+    return False
 
 DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 MONTH_NAMES = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
@@ -95,13 +105,13 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         data["customer_name"] = profile_name
 
     # ── MENU / GREETING (works from ANY state — resets the flow) ──
-    if text_lower in GREETINGS or text_lower in MENU_TRIGGERS or button_id == "btn_menu":
+    if _matches_any(text_lower, GREETINGS) or _matches_any(text_lower, MENU_TRIGGERS) or button_id == "btn_menu":
         _set_state(club_id, wa_phone, "idle", {})
         await _send_main_menu(phone_id, token, wa_phone, club["name"])
         return
 
     # ── START BOOKING ──
-    if text_lower in BOOK_TRIGGERS or button_id == "btn_reservar":
+    if _matches_any(text_lower, BOOK_TRIGGERS) or button_id == "btn_reservar":
         initial_data = {"customer_phone": wa_phone}
         if profile_name:
             initial_data["customer_name"] = profile_name
@@ -110,12 +120,12 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         return
 
     # ── MY BOOKINGS ──
-    if text_lower in MY_BOOKINGS_TRIGGERS or button_id == "btn_mis_reservas":
+    if _matches_any(text_lower, MY_BOOKINGS_TRIGGERS) or button_id == "btn_mis_reservas":
         await _send_my_bookings(phone_id, token, wa_phone, club_id)
         return
 
     # ── CANCEL ──
-    if text_lower in CANCEL_TRIGGERS or button_id == "btn_cancelar":
+    if _matches_any(text_lower, CANCEL_TRIGGERS) or button_id == "btn_cancelar":
         await _handle_cancel_start(phone_id, token, wa_phone, club_id)
         return
 
