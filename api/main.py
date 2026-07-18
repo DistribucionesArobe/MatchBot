@@ -470,13 +470,37 @@ async def api_playtomic_search(date: str = Query("2026-07-05")):
 
 
 @app.get("/api/playtomic/debug")
-async def api_playtomic_debug(date: str = Query("2026-07-05")):
+async def api_playtomic_debug(date: str = Query(None)):
     """Debug: show raw Playtomic responses for tenant info + availability."""
     import httpx
+    from datetime import date as d, timedelta
+
+    if not date:
+        offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+        local_now = datetime.utcnow() + timedelta(hours=offset)
+        date = local_now.strftime("%Y-%m-%d")
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://api.playtomic.io"
-    results = {}
+    results = {"date": date, "tenant_id": tenant_id}
+
+    # Show bot auth status
+    results["bot_logged_in"] = playtomic.token is not None
+    results["bot_user_id"] = playtomic.user_id
+    results["bot_resource_names"] = playtomic._resource_names
+    results["bot_resource_sports"] = playtomic._resource_sports
+
+    # Test availability via bot's own method
+    try:
+        bot_avail = await playtomic.get_availability(date)
+        results["bot_availability_courts"] = len(bot_avail)
+        results["bot_availability_slots"] = sum(len(c.get("slots", [])) for c in bot_avail)
+        if bot_avail:
+            results["bot_availability_preview"] = [
+                {"name": c["name"], "slots": len(c["slots"])} for c in bot_avail
+            ]
+    except Exception as e:
+        results["bot_availability_error"] = str(e)
 
     async with httpx.AsyncClient(timeout=10) as client:
         # 1. Tenant info
