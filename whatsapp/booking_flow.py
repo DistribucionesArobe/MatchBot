@@ -61,7 +61,7 @@ logger = logging.getLogger("matchbot.flow")
 
 # Keyword triggers
 GREETINGS = {"hola", "hi", "hello", "buenas", "buenos dias", "buenas tardes", "que onda"}
-BOOK_TRIGGERS = {"reservar", "reserva", "cancha", "jugar", "booking", "book"}
+BOOK_TRIGGERS = {"reservar", "reserva", "resevar", "resservar", "cancha", "jugar", "booking", "book"}
 CANCEL_TRIGGERS = {"cancelar", "cancela", "cancel"}
 MY_BOOKINGS_TRIGGERS = {"mis reservas", "mis reservaciones", "my bookings", "mis partidos"}
 MENU_TRIGGERS = {"menu", "menú", "opciones", "ayuda", "help"}
@@ -94,8 +94,9 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
     if profile_name:
         data["customer_name"] = profile_name
 
-    # ── MENU / GREETING ──
-    if state == "idle" and (text_lower in GREETINGS or text_lower in MENU_TRIGGERS or button_id == "btn_menu"):
+    # ── MENU / GREETING (works from ANY state — resets the flow) ──
+    if text_lower in GREETINGS or text_lower in MENU_TRIGGERS or button_id == "btn_menu":
+        _set_state(club_id, wa_phone, "idle", {})
         await _send_main_menu(phone_id, token, wa_phone, club["name"])
         return
 
