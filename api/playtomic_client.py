@@ -44,10 +44,19 @@ class PlaytomicClient:
         self.user_id: Optional[str] = None
         self.client = httpx.AsyncClient(
             timeout=15.0,
+            http2=True,
             headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+                "Origin": "https://playtomic.io",
+                "Referer": "https://playtomic.io/",
+                "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"macOS"',
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-site",
             },
         )
         self._resource_names: dict[str, str] = {}  # resource_id → display name cache
