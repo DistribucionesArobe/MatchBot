@@ -105,29 +105,34 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         data["customer_name"] = profile_name
 
     # ── MENU / GREETING (works from ANY state — resets the flow) ──
-    if _matches_any(text_lower, GREETINGS) or _matches_any(text_lower, MENU_TRIGGERS) or button_id == "btn_menu":
-        _set_state(club_id, wa_phone, "idle", {})
-        await _send_main_menu(phone_id, token, wa_phone, club["name"])
-        return
+    # Only trigger on explicit button OR plain text (not list_reply selections
+    # which carry the row title as text and could false-match keywords).
+    is_list_selection = button_id and not button_id.startswith("btn_")
 
-    # ── START BOOKING ──
-    if _matches_any(text_lower, BOOK_TRIGGERS) or button_id == "btn_reservar":
-        initial_data = {"customer_phone": wa_phone}
-        if profile_name:
-            initial_data["customer_name"] = profile_name
-        _set_state(club_id, wa_phone, "choosing_date", initial_data)
-        await _send_date_picker(phone_id, token, wa_phone)
-        return
+    if not is_list_selection:
+        if _matches_any(text_lower, GREETINGS) or _matches_any(text_lower, MENU_TRIGGERS) or button_id == "btn_menu":
+            _set_state(club_id, wa_phone, "idle", {})
+            await _send_main_menu(phone_id, token, wa_phone, club["name"])
+            return
 
-    # ── MY BOOKINGS ──
-    if _matches_any(text_lower, MY_BOOKINGS_TRIGGERS) or button_id == "btn_mis_reservas":
-        await _send_my_bookings(phone_id, token, wa_phone, club_id)
-        return
+        # ── START BOOKING ──
+        if _matches_any(text_lower, BOOK_TRIGGERS) or button_id == "btn_reservar":
+            initial_data = {"customer_phone": wa_phone}
+            if profile_name:
+                initial_data["customer_name"] = profile_name
+            _set_state(club_id, wa_phone, "choosing_date", initial_data)
+            await _send_date_picker(phone_id, token, wa_phone)
+            return
 
-    # ── CANCEL ──
-    if _matches_any(text_lower, CANCEL_TRIGGERS) or button_id == "btn_cancelar":
-        await _handle_cancel_start(phone_id, token, wa_phone, club_id)
-        return
+        # ── MY BOOKINGS ──
+        if _matches_any(text_lower, MY_BOOKINGS_TRIGGERS) or button_id == "btn_mis_reservas":
+            await _send_my_bookings(phone_id, token, wa_phone, club_id)
+            return
+
+        # ── CANCEL ──
+        if _matches_any(text_lower, CANCEL_TRIGGERS) or button_id == "btn_cancelar":
+            await _handle_cancel_start(phone_id, token, wa_phone, club_id)
+            return
 
     # ── STATE MACHINE ──
     if state == "choosing_date":
