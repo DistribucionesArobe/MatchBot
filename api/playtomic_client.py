@@ -91,6 +91,10 @@ class PlaytomicClient:
                     self.token = data.get("access_token")
                     self.refresh_token = data.get("refresh_token")
                     self.user_id = data.get("user_id")
+                    # Set Authorization header on httpx client so ALL
+                    # subsequent requests (availability, tenant info,
+                    # resource names, etc.) carry the Bearer token.
+                    self.client.headers["Authorization"] = f"Bearer {self.token}"
                     logger.info(f"Playtomic login OK via {label} — user_id: {self.user_id}")
                     # Debug: decode refresh token to check audience/claims
                     try:
@@ -150,6 +154,9 @@ class PlaytomicClient:
                         new_rt = data.get("refresh_token")
                         if new_rt:
                             self.refresh_token = new_rt
+                        # Update default Authorization header with tenant token
+                        # (stronger than customer token — has role claims)
+                        self.client.headers["Authorization"] = f"Bearer {self.tenant_token}"
                         # Debug: decode tenant token to check role claims
                         try:
                             tt_parts = self.tenant_token.split(".")
@@ -192,6 +199,9 @@ class PlaytomicClient:
         """Load court/resource names from Playtomic tenant info and cache them."""
         if self._resource_names:
             return  # already loaded
+
+        # Ensure we're authenticated (Manager proxy requires auth)
+        await self.ensure_auth()
 
         # Try multiple endpoints to find resource names
         # Method 1: /v1/tenants/{id} — tenant info with resources
@@ -283,13 +293,15 @@ class PlaytomicClient:
             d = d + timedelta(days=day_offset)
         return d.isoformat()
 
-    # ─── AVAILABILITY (public, no auth needed) ───
+    # ─── AVAILABILITY ───
     async def get_availability(self, date_str: str) -> list:
         """
         Get court availability for a given date (local).
         date_str: 'YYYY-MM-DD' in LOCAL timezone.
         Returns list of available slots grouped by court, with LOCAL times.
         """
+        # Ensure we're authenticated (Manager proxy requires auth for all endpoints)
+        await self.ensure_auth()
         # Load court names first
         await self._ensure_resource_names()
 
