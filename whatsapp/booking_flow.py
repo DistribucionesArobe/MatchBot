@@ -327,33 +327,16 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
             await send_text(phone_id, token, to, "😕 Ese horario ya no está disponible. Intenta otro.")
             return
 
-        if len(matching) == 1:
-            c = matching[0]
-            data["court_name"] = c["court_name"]
-            data["resource_id"] = c["resource_id"]
-            data["price_cents"] = int(c["price"] * 100)
-            data["duration"] = c["duration"]
-            data["start_iso"] = c["start_iso"]
-            _set_state(club_id, to, "confirming", data)
-            await _send_confirmation(phone_id, token, to, data)
-            return
-
-        rows = []
-        for i, c in enumerate(matching):
-            rows.append({
-                "id": f"pcourt_{i}",
-                "title": c["court_name"][:24],
-                "description": f"${c['price']:.0f} MXN - {c['duration']}min",
-            })
-        data["playtomic_matching"] = matching
-        _set_state(club_id, to, "choosing_court", data)
-
-        await send_interactive_list(
-            phone_id, token, to,
-            body=f"🎾 Canchas disponibles a las *{time_str}*\n¿Cuál prefieres?",
-            button_text="Ver canchas",
-            sections=[{"title": "Canchas", "rows": rows}],
-        )
+        # Auto-select the cheapest court — skip the court selection step
+        # so the flow goes straight: Date → Time → Confirm
+        c = min(matching, key=lambda x: x["price"])
+        data["court_name"] = c["court_name"]
+        data["resource_id"] = c["resource_id"]
+        data["price_cents"] = int(c["price"] * 100)
+        data["duration"] = c["duration"]
+        data["start_iso"] = c["start_iso"]
+        _set_state(club_id, to, "confirming", data)
+        await _send_confirmation(phone_id, token, to, data)
         return
 
     # ── INTERNAL DB MODE (original) ──
