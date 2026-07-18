@@ -97,25 +97,17 @@ _build_phone_map()
 
 
 def _resolve_club(phone_number_id: str) -> dict | None:
-    """Resolve phone_number_id to club dict. Uses env vars, falls back to DB."""
+    """Resolve phone_number_id to club dict. Uses env vars ONLY.
+
+    Only processes messages for explicitly configured phone numbers
+    (PHONE_NUMBER_ID_PADEL, PHONE_NUMBER_ID_SALON). Messages from any
+    other number (e.g. CotizaExpress / Aceromax) are ignored.
+    """
     if phone_number_id in _PHONE_MAP:
         return _PHONE_MAP[phone_number_id]
 
-    # Fallback: try DB
-    try:
-        row = execute(
-            "SELECT * FROM clubs WHERE id = 1", [], fetch_one=True
-        )
-        if row:
-            return {
-                "id": row["id"],
-                "name": row["name"],
-                "wa_phone_id": phone_number_id,
-                "wa_token": os.getenv("WHATSAPP_TOKEN", ""),
-            }
-    except:
-        pass
-
+    # No fallback - unknown numbers are intentionally ignored so that
+    # MatchBot does not hijack messages meant for other bots/WABAs.
     return None
 
 
