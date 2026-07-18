@@ -42,7 +42,14 @@ class PlaytomicClient:
         self.tenant_token: Optional[str] = None    # tenant-scoped token (for bookings)
         self.refresh_token: Optional[str] = None
         self.user_id: Optional[str] = None
-        self.client = httpx.AsyncClient(timeout=15.0)
+        self.client = httpx.AsyncClient(
+            timeout=15.0,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+            },
+        )
         self._resource_names: dict[str, str] = {}  # resource_id → display name cache
         self._resource_sports: dict[str, str] = {}  # resource_id → sport_id cache
 

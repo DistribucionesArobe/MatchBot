@@ -502,7 +502,10 @@ async def api_playtomic_debug(date: str = Query(None)):
     except Exception as e:
         results["bot_availability_error"] = str(e)
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }) as client:
         # 1. Tenant info
         try:
             r = await client.get(f"{api}/v1/tenants/{tenant_id}")
