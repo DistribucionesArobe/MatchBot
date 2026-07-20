@@ -150,6 +150,52 @@ class PlaytomicClient:
             "x-authorization-scope": f"tenant:{TENANT_ID}",
         }
 
+        # ── Attempt 0: USER_PERMISSION mode (captured from Manager UI 2026-07-20) ──
+        # This is THE exchange format the real Manager uses. It returns a
+        # token with the full UP_*_RW permission scopes (UP_MATCHES_RW,
+        # UP_SCHEDULE_RW, etc.) required to create bookings. The legacy
+        # grant_type/scope format only returns bare roles → 403
+        # MISSING_PERMISSIONS on any write.
+        try:
+            up_payload = {
+                "refresh_token": self.refresh_token,
+                "token_generation_mode": "USER_PERMISSION",
+                "requested_user_scopes": [
+                    {"role": "ROLE_ACTIVITY_MANAGER", "scope_id": TENANT_ID},
+                    {"role": "ROLE_TENANT_MANAGER", "scope_id": TENANT_ID},
+                ],
+            }
+            logger.info("Requesting tenant token via USER_PERMISSION mode")
+            r = await self.client.post(
+                f"{MANAGER_API}/v3/auth/token",
+                json=up_payload,
+                headers=exchange_headers,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                candidate = data.get("access_token")
+                new_rt = data.get("refresh_token")
+                if new_rt:
+                    self.refresh_token = new_rt
+                claims = self._decode_token_claims(candidate)
+                scopes = claims.get("scopes", []) or []
+                has_write = any(str(s).startswith("UP_") for s in scopes)
+                logger.info(f"USER_PERMISSION token: scopes={scopes[:6]}... has_write={has_write}")
+                if has_write:
+                    self.tenant_token = candidate
+                    self._tenant_token_claims = {
+                        "aud": claims.get("aud"),
+                        "scopes": scopes,
+                        "roles": [k for k in claims.keys() if k.startswith("role")],
+                        "via": "USER_PERMISSION mode",
+                    }
+                    logger.info("Tenant token with UP_* write scopes obtained (USER_PERMISSION)")
+                    return True
+            else:
+                logger.warning(f"USER_PERMISSION exchange failed: {r.status_code} {r.text[:300]}")
+        except Exception as e:
+            logger.warning(f"USER_PERMISSION exchange error: {e}")
+
         fallback_token = None
         fallback_label = ""
 
