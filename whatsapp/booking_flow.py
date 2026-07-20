@@ -535,12 +535,12 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             else:
                 logger.warning(f"Playtomic booking failed: {result.get('error')}")
                 confirmation_msg = (
-                    f"✅ *¡Reserva recibida!*\n\n"
+                    f"😕 *No pudimos completar tu reserva.*\n\n"
                     f"📅 {date_label}\n"
-                    f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
-                    f"🎾 {data['court_name']}\n"
-                    f"💰 ${price:.0f} MXN\n\n"
-                    f"El club confirmará tu reserva en breve. ¡Nos vemos en la cancha! 🎾"
+                    f"🕐 {data['start_time']}\n"
+                    f"🎾 {data['court_name']}\n\n"
+                    f"Hubo un problema técnico. Por favor intenta de nuevo "
+                    f"escribiendo *Reservar*, o contacta al club directamente."
                 )
 
             await send_text(phone_id, token, to, confirmation_msg)
