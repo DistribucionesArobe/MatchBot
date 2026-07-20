@@ -527,6 +527,8 @@ async def api_playtomic_debug(date: str = Query(None)):
     # Per-request status codes from the bot's availability queries
     results["avail_query_debug"] = getattr(playtomic, "_last_avail_debug", {})
     results["has_tenant_token"] = playtomic.tenant_token is not None
+    # Last booking attempt result (statuses + error bodies)
+    results["last_booking_debug"] = getattr(playtomic, "_last_booking_debug", {})
 
     async with httpx.AsyncClient(timeout=10, http2=True, headers={
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",

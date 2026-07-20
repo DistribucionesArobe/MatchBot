@@ -62,6 +62,7 @@ class PlaytomicClient:
         self._resource_names: dict[str, str] = {}  # resource_id → display name cache
         self._resource_sports: dict[str, str] = {}  # resource_id → sport_id cache
         self._last_avail_debug: dict = {}  # diagnostics: last availability query statuses
+        self._last_booking_debug: dict = {}  # diagnostics: last booking attempt result
 
     def _auth_headers(self, use_tenant: bool = False) -> dict:
         """Return Authorization headers for API requests.
@@ -765,6 +766,13 @@ class PlaytomicClient:
             },
         }
 
+        self._last_booking_debug = {
+            "when": datetime.utcnow().isoformat(),
+            "resource_id": resource_id,
+            "start": start_time,
+            "sport": sport_id,
+        }
+
         try:
             logger.info(f"Creating {sport_id} booking via Manager proxy: {resource_id} at {start_time}")
             r = await self.client.post(
@@ -773,16 +781,19 @@ class PlaytomicClient:
                 json=manager_payload,
             )
             logger.info(f"Manager proxy create: {r.status_code} {r.text[:500]}")
+            self._last_booking_debug["attempt1_manager"] = f"{r.status_code}: {r.text[:200]}"
 
             if r.status_code in (200, 201):
                 match_data = r.json()
                 match_id = match_data.get("match_id", match_data.get("matchId", ""))
                 logger.info(f"Booking OK via Manager — match_id: {match_id}")
+                self._last_booking_debug["result"] = f"OK match_id={match_id}"
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.warning(f"Manager proxy create failed ({r.status_code}), falling back to public API")
         except Exception as e:
             logger.warning(f"Manager proxy create exception: {e}, falling back to public API")
+            self._last_booking_debug["attempt1_exception"] = str(e)[:200]
 
         # ── Attempt 2: Create via public API (fallback) ──
         # Include registration_info with price so the Manager UI shows the
@@ -832,11 +843,13 @@ class PlaytomicClient:
                     return {"error": "No se pudo renovar el token de manager"}
 
             logger.info(f"Public API create: {r.status_code} {r.text[:500]}")
+            self._last_booking_debug["attempt2_public"] = f"{r.status_code}: {r.text[:200]}"
 
             if r.status_code in (200, 201):
                 match_data = r.json()
                 match_id = match_data.get("match_id", "")
                 logger.info(f"Booking OK via public API — match_id: {match_id}")
+                self._last_booking_debug["result"] = f"OK (fallback) match_id={match_id}"
 
                 # Add player to the booking
                 if match_id and (customer_name or customer_phone):
@@ -850,10 +863,13 @@ class PlaytomicClient:
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
+                self._last_booking_debug["result"] = "FAILED both attempts"
                 return {"error": f"Error al crear reserva: {r.status_code} - {r.text[:200]}"}
 
         except Exception as e:
             logger.error(f"Booking exception: {e}")
+            self._last_booking_debug["attempt2_exception"] = str(e)[:200]
+            self._last_booking_debug["result"] = "EXCEPTION"
             return {"error": f"Error de conexión: {e}"}
 
     async def _add_registration_info(
