@@ -827,6 +827,23 @@ class PlaytomicClient:
             logger.info(f"Manager proxy create: {r.status_code} {r.text[:500]}")
             self._last_booking_debug["attempt1_manager"] = f"{r.status_code}: {r.text[:200]}"
 
+            # 401/403 → token stale or role-less. Full re-auth and retry once.
+            if r.status_code in (401, 403):
+                logger.warning(f"Manager create got {r.status_code} — full re-auth and retry")
+                self.token = None
+                self.tenant_token = None
+                await self.login()
+                await self.get_tenant_token()
+                if self.tenant_token:
+                    headers["Authorization"] = f"Bearer {self.tenant_token}"
+                    r = await self.client.post(
+                        f"{MANAGER_API}/v1/matches",
+                        headers=headers,
+                        json=manager_payload,
+                    )
+                    logger.info(f"Manager proxy create (retry): {r.status_code} {r.text[:500]}")
+                    self._last_booking_debug["attempt1_retry"] = f"{r.status_code}: {r.text[:200]}"
+
             if r.status_code in (200, 201):
                 match_data = r.json()
                 match_id = match_data.get("match_id", match_data.get("matchId", ""))
