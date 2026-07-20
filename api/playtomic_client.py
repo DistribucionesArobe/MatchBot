@@ -63,6 +63,7 @@ class PlaytomicClient:
         self._resource_sports: dict[str, str] = {}  # resource_id → sport_id cache
         self._last_avail_debug: dict = {}  # diagnostics: last availability query statuses
         self._last_booking_debug: dict = {}  # diagnostics: last booking attempt result
+        self._tenant_token_claims: dict = {}  # diagnostics: claims of current tenant token
 
     def _auth_headers(self, use_tenant: bool = False) -> dict:
         """Return Authorization headers for API requests.
@@ -132,11 +133,23 @@ class PlaytomicClient:
             return False
 
         # Try Manager proxy first, then public API.
-        # Manager proxy adds role claims; public API does not.
+        # IMPORTANT: keep trying combos until we get a token that actually
+        # carries manager role claims (role_*). A 200 response alone is not
+        # enough — the proxy can return a valid but ROLE-LESS token which
+        # later causes 403 MISSING_PERMISSIONS when creating bookings.
         endpoints = [
             (MANAGER_API, "Manager proxy"),
             (PLAYTOMIC_API, "public API"),
         ]
+
+        # Manager UI sends these headers with the token exchange
+        exchange_headers = {
+            "x-requested-with": "com.playtomic.manager",
+            "x-authorization-scope": f"tenant:{TENANT_ID}",
+        }
+
+        fallback_token = None
+        fallback_label = ""
 
         for base, label in endpoints:
             for audience in ["com.playtomic.manager", None]:
@@ -154,28 +167,43 @@ class PlaytomicClient:
                     r = await self.client.post(
                         f"{base}/v3/auth/token",
                         json=payload,
+                        headers=exchange_headers,
                     )
 
                     if r.status_code == 200:
                         data = r.json()
-                        self.tenant_token = data.get("access_token")
+                        candidate = data.get("access_token")
                         new_rt = data.get("refresh_token")
                         if new_rt:
+                            # Exchange consumes the refresh token — keep the new one
                             self.refresh_token = new_rt
-                        # Debug: decode tenant token to check role claims
-                        try:
-                            tt_parts = self.tenant_token.split(".")
-                            tt_payload = json_module.loads(base64.b64decode(tt_parts[1] + "=="))
-                            logger.info(
-                                f"Tenant token claims: aud={tt_payload.get('aud')}, "
-                                f"scopes={tt_payload.get('scopes')}, "
-                                f"has_role_tenant_manager={bool(tt_payload.get('role_tenant_manager'))}, "
-                                f"all_keys={list(tt_payload.keys())}"
-                            )
-                        except Exception as e:
-                            logger.warning(f"Could not decode tenant_token: {e}")
-                        logger.info(f"Tenant token obtained OK via {label} ({aud_label})")
-                        return True
+
+                        # Decode claims to check for manager roles
+                        claims = self._decode_token_claims(candidate)
+                        role_keys = [k for k in claims.keys() if k.startswith("role")]
+                        logger.info(
+                            f"Tenant token via {label} ({aud_label}): "
+                            f"aud={claims.get('aud')}, scopes={claims.get('scopes')}, "
+                            f"roles={role_keys}"
+                        )
+
+                        if role_keys:
+                            # This token has manager permissions — use it
+                            self.tenant_token = candidate
+                            self._tenant_token_claims = {
+                                "aud": claims.get("aud"),
+                                "scopes": claims.get("scopes"),
+                                "roles": role_keys,
+                                "via": f"{label} ({aud_label})",
+                            }
+                            logger.info(f"Tenant token WITH roles obtained via {label} ({aud_label})")
+                            return True
+                        else:
+                            # Valid but role-less — keep as fallback, try next combo
+                            logger.warning(f"Token via {label} ({aud_label}) has NO role claims, trying next combo")
+                            if fallback_token is None:
+                                fallback_token = candidate
+                                fallback_label = f"{label} ({aud_label})"
                     else:
                         logger.warning(
                             f"Tenant token via {label} ({aud_label}) failed: "
@@ -184,8 +212,24 @@ class PlaytomicClient:
                 except Exception as e:
                     logger.warning(f"Tenant token via {label} ({aud_label}) error: {e}")
 
+        if fallback_token:
+            # No role-bearing token found; use the role-less one as last resort
+            self.tenant_token = fallback_token
+            self._tenant_token_claims = {"roles": [], "via": fallback_label, "warning": "NO ROLE CLAIMS"}
+            logger.warning(f"Using role-less tenant token from {fallback_label} — bookings may 403")
+            return True
+
         logger.error("Could not obtain tenant token via any endpoint/audience")
         return False
+
+    def _decode_token_claims(self, token: str) -> dict:
+        """Decode JWT payload (claims) without verification."""
+        try:
+            part = token.split(".")[1]
+            part += "=" * (-len(part) % 4)  # fix base64 padding
+            return json_module.loads(base64.b64decode(part))
+        except Exception:
+            return {}
 
     async def ensure_auth(self):
         """Ensure we have a valid customer token."""

@@ -529,6 +529,16 @@ async def api_playtomic_debug(date: str = Query(None)):
     results["has_tenant_token"] = playtomic.tenant_token is not None
     # Last booking attempt result (statuses + error bodies)
     results["last_booking_debug"] = getattr(playtomic, "_last_booking_debug", {})
+    # Claims of the current tenant token (roles = manager permissions)
+    results["tenant_token_claims"] = getattr(playtomic, "_tenant_token_claims", {})
+    # Claims of the customer (login) token — do the roles exist at login?
+    if playtomic.token:
+        c = playtomic._decode_token_claims(playtomic.token)
+        results["customer_token_claims"] = {
+            "aud": c.get("aud"),
+            "scopes": c.get("scopes"),
+            "roles": [k for k in c.keys() if k.startswith("role")],
+        }
 
     async with httpx.AsyncClient(timeout=10, http2=True, headers={
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
