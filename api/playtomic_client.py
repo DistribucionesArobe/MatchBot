@@ -62,6 +62,16 @@ class PlaytomicClient:
         self._resource_names: dict[str, str] = {}  # resource_id → display name cache
         self._resource_sports: dict[str, str] = {}  # resource_id → sport_id cache
 
+    def _auth_headers(self, use_tenant: bool = False) -> dict:
+        """Return Authorization headers for API requests.
+        use_tenant=True → use tenant_token (for bookings/manager ops).
+        use_tenant=False → use customer token (for availability, resources).
+        """
+        token = (self.tenant_token if use_tenant else None) or self.token
+        if not token:
+            return {}
+        return {"Authorization": f"Bearer {token}"}
+
     # ─── AUTH ───
     async def login(self) -> bool:
         """Step 1: Authenticate with email/password → customer token + refresh token.
@@ -91,10 +101,6 @@ class PlaytomicClient:
                     self.token = data.get("access_token")
                     self.refresh_token = data.get("refresh_token")
                     self.user_id = data.get("user_id")
-                    # Set Authorization header on httpx client so ALL
-                    # subsequent requests (availability, tenant info,
-                    # resource names, etc.) carry the Bearer token.
-                    self.client.headers["Authorization"] = f"Bearer {self.token}"
                     logger.info(f"Playtomic login OK via {label} — user_id: {self.user_id}")
                     # Debug: decode refresh token to check audience/claims
                     try:
@@ -154,9 +160,6 @@ class PlaytomicClient:
                         new_rt = data.get("refresh_token")
                         if new_rt:
                             self.refresh_token = new_rt
-                        # Update default Authorization header with tenant token
-                        # (stronger than customer token — has role claims)
-                        self.client.headers["Authorization"] = f"Bearer {self.tenant_token}"
                         # Debug: decode tenant token to check role claims
                         try:
                             tt_parts = self.tenant_token.split(".")
@@ -206,7 +209,7 @@ class PlaytomicClient:
         # Try multiple endpoints to find resource names
         # Method 1: /v1/tenants/{id} — tenant info with resources
         try:
-            r = await self.client.get(f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}")
+            r = await self.client.get(f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}", headers=self._auth_headers())
             if r.status_code == 200:
                 info = r.json()
                 logger.info(f"Tenant info keys: {list(info.keys())}")
@@ -231,7 +234,7 @@ class PlaytomicClient:
         # Method 2: if Method 1 didn't work, try /v1/tenants/{id}/resources
         if not self._resource_names:
             try:
-                r = await self.client.get(f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}/resources")
+                r = await self.client.get(f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}/resources", headers=self._auth_headers())
                 if r.status_code == 200:
                     resources = r.json()
                     if isinstance(resources, list):
@@ -318,7 +321,9 @@ class PlaytomicClient:
             # Query availability for all sports (PADEL + FOOTBALL7)
             # Each sport is wrapped in its own try/except so a failure
             # in one sport doesn't kill the other.
+            # If we get 401, re-login and retry once.
             all_data = []
+            retried = False
             for sport in ["PADEL", "FOOTBALL7"]:
                 try:
                     params = {
@@ -334,7 +339,20 @@ class PlaytomicClient:
                     r = await self.client.get(
                         f"{PLAYTOMIC_API}/v1/availability",
                         params=params,
+                        headers=self._auth_headers(),
                     )
+                    # Token expired? Re-login once and retry
+                    if r.status_code == 401 and not retried:
+                        logger.warning(f"{sport} availability 401 — re-logging in")
+                        retried = True
+                        self.token = None
+                        self.tenant_token = None
+                        await self.login()
+                        r = await self.client.get(
+                            f"{PLAYTOMIC_API}/v1/availability",
+                            params=params,
+                            headers=self._auth_headers(),
+                        )
                     if r.status_code == 200:
                         data = r.json()
                         if isinstance(data, list):
@@ -1213,9 +1231,11 @@ class PlaytomicClient:
     # ─── TENANT INFO ───
     async def get_tenant_info(self) -> dict:
         """Get club info from Playtomic."""
+        await self.ensure_auth()
         try:
             r = await self.client.get(
-                f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}"
+                f"{PLAYTOMIC_API}/v1/tenants/{TENANT_ID}",
+                headers=self._auth_headers(),
             )
             if r.status_code == 200:
                 return r.json()
