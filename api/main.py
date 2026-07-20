@@ -482,7 +482,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v7-reauth-retry", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v8-tenant-claims", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None
@@ -529,6 +529,27 @@ async def api_playtomic_debug(date: str = Query(None)):
     results["has_tenant_token"] = playtomic.tenant_token is not None
     # Last booking attempt result (statuses + error bodies)
     results["last_booking_debug"] = getattr(playtomic, "_last_booking_debug", {})
+
+    # Check the OTHER tenant ("TO BE DELETED") — the bot's manager role
+    # may be attached to it instead of the tenant we use
+    ALT_TENANT = "04007e09-6f59-4ed1-bbef-13c80aa0c906"
+    try:
+        r = await playtomic.client.get(
+            f"{api}/v1/tenants/{ALT_TENANT}",
+            headers=playtomic._auth_headers(),
+        )
+        if r.status_code == 200:
+            info = r.json()
+            alt_resources = info.get("resources", info.get("facilities", []))
+            results["alt_tenant_name"] = info.get("tenant_name", info.get("name", "?"))
+            results["alt_tenant_resources"] = [
+                {"id": x.get("resource_id", x.get("id", "")), "name": x.get("name", ""), "sport": x.get("sport_id", "")}
+                for x in (alt_resources[:10] if isinstance(alt_resources, list) else [])
+            ]
+        else:
+            results["alt_tenant_error"] = f"{r.status_code}: {r.text[:150]}"
+    except Exception as e:
+        results["alt_tenant_error"] = str(e)[:200]
     # Claims of the current tenant token (roles = manager permissions)
     results["tenant_token_claims"] = getattr(playtomic, "_tenant_token_claims", {})
     # Claims of the customer (login) token — do the roles exist at login?

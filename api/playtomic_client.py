@@ -194,6 +194,8 @@ class PlaytomicClient:
                                 "aud": claims.get("aud"),
                                 "scopes": claims.get("scopes"),
                                 "roles": role_keys,
+                                # Show WHICH tenants each role applies to
+                                "role_values": {k: claims.get(k) for k in role_keys},
                                 "via": f"{label} ({aud_label})",
                             }
                             logger.info(f"Tenant token WITH roles obtained via {label} ({aud_label})")
