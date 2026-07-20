@@ -767,33 +767,30 @@ class PlaytomicClient:
                 player_display_name = f"{player_display_name} ({phone_clean[-10:]})"
             player_type = "GUEST"
 
-        # ── Attempt 1: Create via Manager proxy with full payload ──
-        # The Manager proxy uses snake_case (NOT camelCase). Including
-        # registration_info triggers automatic price calculation on the
-        # server, producing a booking identical to ones created from the
-        # Manager UI — with the Payment section visible.
-        # Format dates with Z suffix like the Manager UI does
-        start_date_z = start_time.rstrip("Z") + "Z" if not start_time.endswith("Z") else start_time
-        end_date_z = end_time.rstrip("Z") + "Z" if not end_time.endswith("Z") else end_time
+        # ── Attempt 1: Create via Manager proxy — EXACT mirror of what the
+        # Manager UI sends (captured 2026-07-20 from a real booking):
+        #   POST /api/v1/matches
+        #   {"visibility":"HIDDEN","is_playtomic_managed":false,
+        #    "max_players_per_team":2,"description":null,
+        #    "end_date":"2026-07-21T05:00Z","private_notes":null,
+        #    "registration_info":{"payment_type":"SINGLE_PAYER",
+        #      "registrations":[{"merchant_player_id":"guest:...","name":"X"},{},{},{}]},
+        #    "resource_id":"...","sport_id":"PADEL",
+        #    "start_date":"2026-07-21T03:30Z","tenant_id":"..."}
+        # KEY: registrations must NOT carry price/paid — setting payment
+        # fields manually triggers 403 MISSING_PERMISSIONS. The server
+        # auto-calculates the price. Dates use minutes precision + Z.
+        def _fmt_manager_date(iso_str: str) -> str:
+            # "2026-07-20T19:30:00(Z)" → "2026-07-20T19:30Z"
+            return iso_str.rstrip("Z")[:16] + "Z"
 
-        # Build per-person price for split payment
-        # Padel: 300/4 = 75 MXN per person; Football: price/14 per person
-        per_person_price = f"{int(slot_price / num_players)} MXN" if slot_price > 0 else None
+        start_date_z = _fmt_manager_date(start_time)
+        end_date_z = _fmt_manager_date(end_time)
 
-        # Build registration entries — all 4 get a price for split payment
-        first_registration = {
-            "merchant_player_id": player_merchant_id,
-            "name": player_display_name,
-        }
-        empty_registration = {}
-
-        if per_person_price:
-            first_registration["price"] = per_person_price
-            first_registration["paid"] = False
-            empty_registration = {"price": per_person_price, "paid": False}
-
-        # Build registrations list: first player + (num_players - 1) empty slots
-        registrations = [first_registration] + [dict(empty_registration) for _ in range(num_players - 1)]
+        # Registrations: first player identified, rest empty — NO price/paid
+        registrations = [
+            {"merchant_player_id": player_merchant_id, "name": player_display_name}
+        ] + [{} for _ in range(num_players - 1)]
 
         manager_payload = {
             "sport_id": sport_id,
@@ -858,34 +855,19 @@ class PlaytomicClient:
             logger.warning(f"Manager proxy create exception: {e}, falling back to public API")
             self._last_booking_debug["attempt1_exception"] = str(e)[:200]
 
-        # ── Attempt 2: Create via public API (fallback) ──
-        # Include registration_info with price so the Manager UI shows the
-        # Payment section. The price is sent by the client, NOT calculated
-        # server-side.
-        match_payload = {
-            "sport_id": sport_id,
-            "tenant_id": TENANT_ID,
-            "resource_id": resource_id,
-            "start_date": start_date_z,
-            "end_date": end_date_z,
-            "match_type": "BOOKING",
-            "match_organization": "TENANT",
-            "visibility": "HIDDEN",
-            "match_origin": "PLAYTOMIC_MANAGER",
-            "competition_mode": "COMPETITIVE",
-            "min_players_per_team": max_per_team,
-            "max_players_per_team": max_per_team,
-            "owner_id": self.user_id,
-            "registration_info": {
-                "payment_type": "SPLIT",
-                "registrations": registrations,
-            },
+        # ── Attempt 2: same endpoint, SINGLE_PAYER (exact captured mirror) ──
+        # If SPLIT is rejected for any reason, retry with the exact
+        # payment_type observed in the working Manager UI request.
+        match_payload = dict(manager_payload)
+        match_payload["registration_info"] = {
+            "payment_type": "SINGLE_PAYER",
+            "registrations": registrations,
         }
 
         try:
-            logger.info(f"Creating {sport_id} booking via public API: {resource_id} at {start_time} for '{customer_name}'")
+            logger.info(f"Creating {sport_id} booking (SINGLE_PAYER fallback): {resource_id} at {start_time} for '{customer_name}'")
             r = await self.client.post(
-                f"{PLAYTOMIC_API}/v1/matches",
+                f"{MANAGER_API}/v1/matches",
                 headers=headers,
                 json=match_payload,
             )
@@ -898,31 +880,21 @@ class PlaytomicClient:
                 if self.tenant_token:
                     headers["Authorization"] = f"Bearer {self.tenant_token}"
                     r = await self.client.post(
-                        f"{PLAYTOMIC_API}/v1/matches",
+                        f"{MANAGER_API}/v1/matches",
                         headers=headers,
                         json=match_payload,
                     )
                 else:
                     return {"error": "No se pudo renovar el token de manager"}
 
-            logger.info(f"Public API create: {r.status_code} {r.text[:500]}")
-            self._last_booking_debug["attempt2_public"] = f"{r.status_code}: {r.text[:200]}"
+            logger.info(f"SINGLE_PAYER fallback create: {r.status_code} {r.text[:500]}")
+            self._last_booking_debug["attempt2_single_payer"] = f"{r.status_code}: {r.text[:200]}"
 
             if r.status_code in (200, 201):
                 match_data = r.json()
                 match_id = match_data.get("match_id", "")
-                logger.info(f"Booking OK via public API — match_id: {match_id}")
+                logger.info(f"Booking OK via SINGLE_PAYER fallback — match_id: {match_id}")
                 self._last_booking_debug["result"] = f"OK (fallback) match_id={match_id}"
-
-                # Add player to the booking
-                if match_id and (customer_name or customer_phone):
-                    await self._add_player_to_match(
-                        match_id, headers, customer_name, customer_phone
-                    )
-
-                # registration_info with price is now included in the POST
-                # payload, so no separate PATCH is needed.
-
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
