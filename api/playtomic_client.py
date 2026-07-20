@@ -49,14 +49,16 @@ class PlaytomicClient:
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
-                "Origin": "https://playtomic.io",
-                "Referer": "https://playtomic.io/",
+                # Present as the Manager UI itself (same-origin) — the proxy
+                # rejects write operations that look cross-origin
+                "Origin": "https://manager.playtomic.io",
+                "Referer": "https://manager.playtomic.io/",
                 "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126"',
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"macOS"',
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-site",
+                "sec-fetch-site": "same-origin",
             },
         )
         self._resource_names: dict[str, str] = {}  # resource_id → display name cache
@@ -144,7 +146,7 @@ class PlaytomicClient:
 
         # Manager UI sends these headers with the token exchange
         exchange_headers = {
-            "x-requested-with": "com.playtomic.manager",
+            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
             "x-authorization-scope": f"tenant:{TENANT_ID}",
         }
 
@@ -416,7 +418,7 @@ class PlaytomicClient:
                         if self.tenant_token:
                             manager_headers = {
                                 "Authorization": f"Bearer {self.tenant_token}",
-                                "x-requested-with": "com.playtomic.manager",
+                                "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
                                 "x-authorization-scope": f"tenant:{TENANT_ID}",
                             }
                             r = await self.client.get(
@@ -724,7 +726,7 @@ class PlaytomicClient:
             "Authorization": f"Bearer {self.tenant_token}",
             "Content-Type": "application/json",
             # Manager proxy requires these headers (intercepted from Manager UI)
-            "x-requested-with": "com.playtomic.manager",
+            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
             "x-authorization-scope": f"tenant:{TENANT_ID}",
         }
 
