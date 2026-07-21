@@ -447,6 +447,13 @@ async def api_playtomic_cancel(match_id: str):
     raise HTTPException(400, result.get("error", "Cancel failed"))
 
 
+@app.get("/api/playtomic/cancel-match")
+async def api_playtomic_cancel_get(match_id: str = Query(...)):
+    """TEMP: Cancel a match via GET (for remote admin without curl DELETE)."""
+    result = await playtomic.cancel_match(match_id)
+    return result
+
+
 @app.post("/api/playtomic/cancel-bulk")
 async def api_playtomic_cancel_bulk(request: Request):
     """Cancel multiple Playtomic matches at once (admin)."""
@@ -482,7 +489,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v11-user-permission", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v12-guest-always", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None

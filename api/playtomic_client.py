@@ -793,27 +793,19 @@ class PlaytomicClient:
         max_per_team = 7 if is_football else 2
         num_players = max_per_team * 2
 
-        # Build player info for registration
-        player_merchant_id = None
+        # Build player info for registration.
+        # ALWAYS register as GUEST — this is the exact format captured from
+        # the Manager UI and verified to produce bookings whose detail
+        # panel opens correctly. Linking a numeric user_id as
+        # merchant_player_id corrupts the booking (detail crashes with
+        # "Something went wrong" in Manager).
         player_display_name = customer_name or "WhatsApp"
-
-        # Search for existing customer first
-        existing = None
+        timestamp_ms = int(time.time() * 1000)
+        random_hex = uuid.uuid4().hex[:8]
+        player_merchant_id = f"guest:{timestamp_ms}:{random_hex}"
         if customer_phone:
-            existing = await self._search_customer_by_phone(headers, customer_phone)
-
-        if existing and existing.get("user_id"):
-            player_merchant_id = existing["user_id"]
-            player_display_name = existing.get("full_name") or customer_name or "WhatsApp"
-            player_type = "CUSTOMER"
-        else:
-            timestamp_ms = int(time.time() * 1000)
-            random_hex = uuid.uuid4().hex[:8]
-            player_merchant_id = f"guest:{timestamp_ms}:{random_hex}"
-            if customer_phone:
-                phone_clean = customer_phone.lstrip("+").strip()
-                player_display_name = f"{player_display_name} ({phone_clean[-10:]})"
-            player_type = "GUEST"
+            phone_clean = customer_phone.lstrip("+").strip()
+            player_display_name = f"{player_display_name} ({phone_clean[-10:]})"
 
         # ── Attempt 1: Create via Manager proxy — EXACT mirror of what the
         # Manager UI sends (captured 2026-07-20 from a real booking):
