@@ -827,10 +827,20 @@ class PlaytomicClient:
         start_date_z = _fmt_manager_date(start_time)
         end_date_z = _fmt_manager_date(end_time)
 
-        # Registrations: first player identified, rest empty — NO price/paid
-        registrations = [
-            {"merchant_player_id": player_merchant_id, "name": player_display_name}
-        ] + [{} for _ in range(num_players - 1)]
+        # Registrations for SPLIT payment: each slot carries its share of
+        # the price (padel 300/4 = 75 MXN each; football price/14).
+        # This mirrors staff-created Split bookings, which show each
+        # player's share and open correctly in the Manager.
+        per_person = f"{int(slot_price / num_players)} MXN" if slot_price > 0 else None
+        first_registration = {
+            "merchant_player_id": player_merchant_id,
+            "name": player_display_name,
+        }
+        empty_registration = {}
+        if per_person:
+            first_registration["price"] = per_person
+            empty_registration = {"price": per_person}
+        registrations = [first_registration] + [dict(empty_registration) for _ in range(num_players - 1)]
 
         manager_payload = {
             "sport_id": sport_id,
@@ -844,10 +854,9 @@ class PlaytomicClient:
             "description": None,
             "private_notes": None,
             "registration_info": {
-                # SINGLE_PAYER: exact captured value from the working
-                # Manager UI booking. SPLIT with empty registrations
-                # produces a booking whose detail panel crashes.
-                "payment_type": "SINGLE_PAYER",
+                # SPLIT with per-person prices — like staff-created split
+                # bookings (each player pays their share).
+                "payment_type": "SPLIT",
                 "registrations": registrations,
             },
         }
@@ -898,11 +907,14 @@ class PlaytomicClient:
             logger.warning(f"Manager proxy create exception: {e}, falling back to public API")
             self._last_booking_debug["attempt1_exception"] = str(e)[:200]
 
-        # ── Attempt 2: same endpoint, SPLIT (alternative payment type) ──
+        # ── Attempt 2: same endpoint, SINGLE_PAYER without prices ──
+        # (exact captured mirror — known to create clickable bookings)
         match_payload = dict(manager_payload)
         match_payload["registration_info"] = {
-            "payment_type": "SPLIT",
-            "registrations": registrations,
+            "payment_type": "SINGLE_PAYER",
+            "registrations": [
+                {"merchant_player_id": player_merchant_id, "name": player_display_name}
+            ] + [{} for _ in range(num_players - 1)],
         }
 
         try:
