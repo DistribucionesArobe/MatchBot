@@ -454,6 +454,27 @@ async def api_playtomic_cancel_get(match_id: str = Query(...)):
     return result
 
 
+@app.get("/api/playtomic/matches-list")
+async def api_playtomic_matches_list(date: str = Query(...)):
+    """TEMP: List matches for a local date — id, name, court, time."""
+    matches = await playtomic.list_matches(date)
+    out = []
+    for m in matches:
+        players = []
+        for t in m.get("teams", []):
+            for p in t.get("players", []):
+                players.append(p.get("name", "?"))
+        out.append({
+            "match_id": m.get("match_id"),
+            "start": m.get("start_date"),
+            "resource": m.get("resource_name"),
+            "players": players,
+            "owner_id": m.get("owner_id"),
+            "origin": m.get("match_origin"),
+        })
+    return {"count": len(out), "matches": out}
+
+
 @app.get("/api/playtomic/match-raw")
 async def api_playtomic_match_raw(match_id: str = Query(...)):
     """TEMP: Fetch raw match JSON to diff working vs broken bookings."""
@@ -512,7 +533,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v15-match-raw", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v16-owner-guestid", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None

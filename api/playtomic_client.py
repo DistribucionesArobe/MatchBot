@@ -802,7 +802,9 @@ class PlaytomicClient:
         player_display_name = customer_name or "WhatsApp"
         timestamp_ms = int(time.time() * 1000)
         random_hex = uuid.uuid4().hex[:8]
-        player_merchant_id = f"guest:{timestamp_ms}:{random_hex}"
+        # Guest id format as STORED by Manager-created bookings:
+        # guest:<tenant_id>:<timestamp_ms>:<hex> (4 parts, includes tenant)
+        player_merchant_id = f"guest:{TENANT_ID}:{timestamp_ms}:{random_hex}"
         if customer_phone:
             phone_clean = customer_phone.lstrip("+").strip()
             player_display_name = f"{player_display_name} ({phone_clean[-10:]})"
@@ -853,6 +855,9 @@ class PlaytomicClient:
             "max_players_per_team": max_per_team,
             "description": None,
             "private_notes": None,
+            # owner_id: bot bookings were stored with owner_id null, which
+            # historically breaks the Manager detail panel. Set explicitly.
+            "owner_id": self.user_id,
             "registration_info": {
                 # SPLIT with per-person prices — like staff-created split
                 # bookings (each player pays their share).
