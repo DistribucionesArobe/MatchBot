@@ -454,6 +454,29 @@ async def api_playtomic_cancel_get(match_id: str = Query(...)):
     return result
 
 
+@app.get("/api/playtomic/match-raw")
+async def api_playtomic_match_raw(match_id: str = Query(...)):
+    """TEMP: Fetch raw match JSON to diff working vs broken bookings."""
+    await playtomic.ensure_tenant_auth()
+    if not playtomic.tenant_token:
+        return {"error": "no tenant token"}
+    headers = {
+        "Authorization": f"Bearer {playtomic.tenant_token}",
+        "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+        "x-authorization-scope": f"tenant:{os.getenv('PLAYTOMIC_TENANT_ID', '')}",
+    }
+    try:
+        r = await playtomic.client.get(
+            f"https://manager.playtomic.io/api/v1/matches/{match_id}",
+            headers=headers,
+        )
+        if r.status_code == 200:
+            return r.json()
+        return {"error": f"{r.status_code}: {r.text[:300]}"}
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+
 @app.post("/api/playtomic/cancel-bulk")
 async def api_playtomic_cancel_bulk(request: Request):
     """Cancel multiple Playtomic matches at once (admin)."""
@@ -489,7 +512,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v14-split-prices", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v15-match-raw", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None
