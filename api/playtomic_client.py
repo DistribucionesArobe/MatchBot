@@ -844,7 +844,10 @@ class PlaytomicClient:
             "description": None,
             "private_notes": None,
             "registration_info": {
-                "payment_type": "SPLIT",
+                # SINGLE_PAYER: exact captured value from the working
+                # Manager UI booking. SPLIT with empty registrations
+                # produces a booking whose detail panel crashes.
+                "payment_type": "SINGLE_PAYER",
                 "registrations": registrations,
             },
         }
@@ -895,12 +898,10 @@ class PlaytomicClient:
             logger.warning(f"Manager proxy create exception: {e}, falling back to public API")
             self._last_booking_debug["attempt1_exception"] = str(e)[:200]
 
-        # ── Attempt 2: same endpoint, SINGLE_PAYER (exact captured mirror) ──
-        # If SPLIT is rejected for any reason, retry with the exact
-        # payment_type observed in the working Manager UI request.
+        # ── Attempt 2: same endpoint, SPLIT (alternative payment type) ──
         match_payload = dict(manager_payload)
         match_payload["registration_info"] = {
-            "payment_type": "SINGLE_PAYER",
+            "payment_type": "SPLIT",
             "registrations": registrations,
         }
 
@@ -1319,7 +1320,11 @@ class PlaytomicClient:
         if not self.tenant_token:
             return {"error": "No tenant token"}
 
-        headers = {"Authorization": f"Bearer {self.tenant_token}"}
+        headers = {
+            "Authorization": f"Bearer {self.tenant_token}",
+            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+            "x-authorization-scope": f"tenant:{TENANT_ID}",
+        }
 
         try:
             # Try DELETE first
