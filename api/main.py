@@ -65,7 +65,101 @@ async def startup():
     except Exception as e:
         logger.warning(f"Could not pre-load court names: {e}")
 
+    # Daily self-check with WhatsApp alert on failure
+    asyncio.create_task(_daily_health_loop())
+
     logger.info("🎾 MatchBot started — matchbot.live")
+
+
+# ─────────────────────────────────────────────────────
+# DAILY HEALTH CHECK — alerts club owner via WhatsApp
+# ─────────────────────────────────────────────────────
+
+async def _run_health_check() -> list[str]:
+    """Verify the Playtomic integration end-to-end (without creating
+    bookings). Returns a list of problems (empty = all good)."""
+    problems = []
+    try:
+        # 1. Fresh login
+        ok = await playtomic.login()
+        if not ok:
+            problems.append("Login a Playtomic falló")
+            return problems
+
+        # 2. Fresh tenant token with write permissions
+        playtomic.tenant_token = None
+        await playtomic.get_tenant_token()
+        claims = getattr(playtomic, "_tenant_token_claims", {})
+        scopes = claims.get("scopes", []) or []
+        if "UP_MATCHES_RW" not in [str(s) for s in scopes]:
+            problems.append("El token NO tiene permiso para crear reservas (UP_MATCHES_RW)")
+
+        # 3. Availability for tomorrow
+        from datetime import timedelta as _td
+        offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+        local_now = datetime.utcnow() + _td(hours=offset)
+        tomorrow = (local_now + _td(days=1)).strftime("%Y-%m-%d")
+        avail = await playtomic.get_availability(tomorrow)
+        if not avail:
+            problems.append(f"Disponibilidad vacía para mañana ({tomorrow})")
+    except Exception as e:
+        problems.append(f"Error inesperado: {str(e)[:150]}")
+    return problems
+
+
+async def _send_health_alert(problems: list[str]):
+    """Send WhatsApp alert to the club owner."""
+    from whatsapp.sender import send_text
+    phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    notify = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
+    if not phone_id or not token:
+        logger.error("Health alert: WhatsApp credentials not configured")
+        return
+    msg = (
+        "⚠️ *MatchBot — Alerta del chequeo diario*\n\n"
+        + "\n".join(f"• {p}" for p in problems)
+        + "\n\nEl bot podría no estar creando reservas correctamente. "
+        "Los clientes verán un mensaje de error si intentan reservar."
+    )
+    await send_text(phone_id, token, notify, msg)
+
+
+async def _daily_health_loop():
+    """Run the health check every day at 07:00 club local time."""
+    while True:
+        try:
+            offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+            # 07:00 local = (7 - offset) UTC, e.g. -6 → 13:00 UTC
+            target_utc_hour = (7 - offset) % 24
+            now = datetime.utcnow()
+            target = now.replace(hour=target_utc_hour, minute=0, second=0, microsecond=0)
+            if target <= now:
+                from datetime import timedelta as _td
+                target = target + _td(days=1)
+            await asyncio.sleep((target - now).total_seconds())
+
+            problems = await _run_health_check()
+            if problems:
+                logger.warning(f"Daily health check FAILED: {problems}")
+                await _send_health_alert(problems)
+            else:
+                logger.info("Daily health check OK")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Health loop error: {e}")
+            await asyncio.sleep(3600)  # retry in an hour on unexpected errors
+
+
+@app.get("/api/health-check")
+async def api_health_check(send_alert: int = Query(0)):
+    """Run the self-check now. ?send_alert=1 also sends the WhatsApp
+    alert if there are problems (for testing the alert path)."""
+    problems = await _run_health_check()
+    if problems and send_alert:
+        await _send_health_alert(problems)
+    return {"ok": len(problems) == 0, "problems": problems}
 
 
 # ─────────────────────────────────────────────────────
@@ -533,7 +627,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v16-owner-guestid", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v17-healthcheck", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None
