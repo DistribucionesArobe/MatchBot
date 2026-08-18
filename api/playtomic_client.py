@@ -413,79 +413,67 @@ class PlaytomicClient:
         utc_start = f"{date_str}T{offset_h:02d}:00:00"
         utc_end = f"{next_day}T{offset_h:02d}:00:00"
 
+        async def _query_sport(sport: str):
+            """Single availability GET for one sport. Returns (sport, response|None)."""
+            params = {
+                "user_id": "me",
+                "sport_id": sport,
+                "tenant_id": TENANT_ID,
+                "local_start_min": f"{date_str}T00:00:00",
+                "local_start_max": f"{date_str}T23:59:59",
+                "start_min": utc_start,
+                "start_max": utc_end,
+            }
+            try:
+                r = await self.client.get(
+                    f"{PLAYTOMIC_API}/v1/availability",
+                    params=params,
+                    headers=self._auth_headers(),
+                )
+                return (sport, r)
+            except Exception as e:
+                logger.warning(f"{sport} availability query failed: {e}")
+                self._last_avail_debug[f"{sport}_exception"] = str(e)[:200]
+                return (sport, None)
+
         try:
-            # Query availability for all sports (PADEL + FOOTBALL7)
-            # Each sport is wrapped in its own try/except so a failure
-            # in one sport doesn't kill the other.
-            # Strategy per sport:
-            #   1. customer token
-            #   2. on 401 → re-login, retry with fresh customer token
-            #   3. still 401 → tenant token + manager scope headers
+            # Query BOTH sports in PARALLEL (was sequential — 2x slower).
+            # If any returns 401 (expired token), re-login once and retry
+            # both in parallel again.
             all_data = []
-            retried = False
             self._last_avail_debug = {"date": date_str}
-            for sport in ["PADEL", "FOOTBALL7"]:
-                try:
-                    params = {
-                        "user_id": "me",
-                        "sport_id": sport,
-                        "tenant_id": TENANT_ID,
-                        "local_start_min": f"{date_str}T00:00:00",
-                        "local_start_max": f"{date_str}T23:59:59",
-                        "start_min": utc_start,
-                        "start_max": utc_end,
-                    }
-                    logger.info(f"Querying {sport} availability: date={date_str}")
-                    r = await self.client.get(
-                        f"{PLAYTOMIC_API}/v1/availability",
-                        params=params,
-                        headers=self._auth_headers(),
-                    )
+            sports = ["PADEL", "FOOTBALL7"]
+
+            logger.info(f"Querying availability (parallel): date={date_str}")
+            import asyncio as _aio
+            results = await _aio.gather(*[_query_sport(s) for s in sports])
+            for sport, r in results:
+                if r is not None:
                     self._last_avail_debug[f"{sport}_1_customer"] = r.status_code
 
-                    # Token expired? Re-login once and retry
-                    if r.status_code == 401 and not retried:
-                        logger.warning(f"{sport} availability 401 — re-logging in")
-                        retried = True
-                        self.token = None
-                        self.tenant_token = None
-                        await self.login()
-                        r = await self.client.get(
-                            f"{PLAYTOMIC_API}/v1/availability",
-                            params=params,
-                            headers=self._auth_headers(),
-                        )
+            # Any 401? Re-login once, retry both in parallel
+            if any(r is not None and r.status_code == 401 for _, r in results):
+                logger.warning("Availability 401 — re-logging in and retrying")
+                self.token = None
+                self.tenant_token = None
+                await self.login()
+                results = await _aio.gather(*[_query_sport(s) for s in sports])
+                for sport, r in results:
+                    if r is not None:
                         self._last_avail_debug[f"{sport}_2_relogin"] = r.status_code
 
-                    # Still 401? Try tenant token + manager scope headers
-                    # (same auth combo that works for create_booking)
-                    if r.status_code == 401:
-                        await self.ensure_tenant_auth()
-                        if self.tenant_token:
-                            manager_headers = {
-                                "Authorization": f"Bearer {self.tenant_token}",
-                                "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
-                                "x-authorization-scope": f"tenant:{TENANT_ID}",
-                            }
-                            r = await self.client.get(
-                                f"{PLAYTOMIC_API}/v1/availability",
-                                params=params,
-                                headers=manager_headers,
-                            )
-                            self._last_avail_debug[f"{sport}_3_tenant"] = r.status_code
-
-                    if r.status_code == 200:
-                        data = r.json()
-                        if isinstance(data, list):
-                            logger.info(f"{sport} availability: {len(data)} items")
-                            self._last_avail_debug[f"{sport}_items"] = len(data)
-                            all_data.extend(data)
-                    else:
-                        logger.warning(f"{sport} availability error: {r.status_code} {r.text[:200]}")
-                        self._last_avail_debug[f"{sport}_final_error"] = f"{r.status_code}: {r.text[:150]}"
-                except Exception as e:
-                    logger.warning(f"{sport} availability query failed: {e}")
-                    self._last_avail_debug[f"{sport}_exception"] = str(e)[:200]
+            for sport, r in results:
+                if r is None:
+                    continue
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list):
+                        logger.info(f"{sport} availability: {len(data)} items")
+                        self._last_avail_debug[f"{sport}_items"] = len(data)
+                        all_data.extend(data)
+                else:
+                    logger.warning(f"{sport} availability error: {r.status_code} {r.text[:200]}")
+                    self._last_avail_debug[f"{sport}_final_error"] = f"{r.status_code}: {r.text[:150]}"
 
             data = all_data
             logger.info(f"Total availability: {len(data)} items (all sports)")
@@ -1181,9 +1169,11 @@ class PlaytomicClient:
         all_matches = []
 
         try:
-            # Query without date filter — API ignores it anyway
-            # Try multiple pages/sort orders to get comprehensive results
-            for sort_param in ["start_date:asc", "start_date:desc"]:
+            # Query without date filter — API ignores it anyway.
+            # Only desc (most recent first): upcoming bookings are always
+            # within the newest 200 matches. (asc returned the OLDEST
+            # matches — useless — and doubled the latency.)
+            for sort_param in ["start_date:desc"]:
                 r = await self.client.get(
                     f"{PLAYTOMIC_API}/v1/matches",
                     headers={"Authorization": f"Bearer {self.tenant_token}"},

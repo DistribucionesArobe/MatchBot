@@ -276,7 +276,21 @@ async def webhook_receive(request: Request):
                     VALUES (%s, %s, 'inbound', %s, %s::jsonb, %s)
                 """, [club["id"], sender, msg.get("type", ""), json.dumps(msg), wa_msg_id])
 
-                # Buffer rapid messages (5s window)
+                # Interactive replies (button/list taps) are deliberate
+                # single actions — process IMMEDIATELY, no buffering.
+                if msg.get("type") == "interactive":
+                    buf_key = f"{club['id']}:{sender}"
+                    # Cancel any pending buffered text for this user
+                    if buf_key in _buffer_tasks:
+                        _buffer_tasks[buf_key].cancel()
+                        _buffer_tasks.pop(buf_key, None)
+                        _msg_buffers.pop(buf_key, None)
+                    asyncio.create_task(
+                        _process_single(dict(club), sender, msg, wa_profile_name)
+                    )
+                    continue
+
+                # Typed text: buffer briefly to group rapid messages
                 buf_key = f"{club['id']}:{sender}"
                 _msg_buffers[buf_key].append(msg)
 
@@ -288,6 +302,14 @@ async def webhook_receive(request: Request):
                 )
 
     return JSONResponse({"status": "ok"})
+
+
+async def _process_single(club: dict, sender: str, msg: dict, profile_name: str = ""):
+    """Process one message immediately (used for button/list replies)."""
+    try:
+        await handle_message(club, sender, msg, profile_name=profile_name)
+    except Exception as e:
+        logger.error(f"Error handling interactive from {sender}: {e}", exc_info=True)
 
 
 async def _process_buffered(buf_key: str, club: dict, sender: str, profile_name: str = ""):
@@ -627,7 +649,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v17-healthcheck", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v18-speed", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None

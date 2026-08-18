@@ -30,7 +30,7 @@ class Settings:
     CANCELLATION_HOURS: int = 4             # cancelar gratis hasta 4h antes
 
     # -- Message buffering --
-    MSG_BUFFER_SECONDS: float = 5.0         # esperar mensajes rápidos
+    MSG_BUFFER_SECONDS: float = 2.0         # esperar mensajes rápidos (solo texto)
 
     # -- Stripe (optional) --
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
