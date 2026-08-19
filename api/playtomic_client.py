@@ -89,38 +89,60 @@ class PlaytomicClient:
             logger.error("PLAYTOMIC_EMAIL / PLAYTOMIC_PASSWORD not set")
             return False
 
-        # Try Manager proxy first (grants Manager role claims in token)
-        for base, label in [(MANAGER_API, "Manager proxy"), (PLAYTOMIC_API, "public API")]:
+        # Payload formats, newest first. Playtomic changed the contract
+        # in Aug 2026: login now requires requested_user_scopes and
+        # rejects the old audience-based payload with INVALID_TOKEN_SCOPE.
+        payloads = [
+            ("requested_user_scopes", {
+                "email": PLAYTOMIC_EMAIL,
+                "password": PLAYTOMIC_PASSWORD,
+                "requested_user_scopes": [
+                    {"role": "ROLE_ACTIVITY_MANAGER", "scope_id": TENANT_ID},
+                    {"role": "ROLE_TENANT_MANAGER", "scope_id": TENANT_ID},
+                ],
+            }),
+            ("legacy audience", {
+                "email": PLAYTOMIC_EMAIL,
+                "password": PLAYTOMIC_PASSWORD,
+                "audience": "com.playtomic.manager",
+            }),
+        ]
+
+        for fmt_label, payload in payloads:
             try:
-                logger.info(f"Attempting login via {label} ({base}/v3/auth/login)")
+                logger.info(f"Attempting login ({fmt_label}) via {MANAGER_API}/v3/auth/login")
                 r = await self.client.post(
-                    f"{base}/v3/auth/login",
-                    json={
-                        "email": PLAYTOMIC_EMAIL,
-                        "password": PLAYTOMIC_PASSWORD,
-                        "audience": "com.playtomic.manager",
-                    },
+                    f"{MANAGER_API}/v3/auth/login",
+                    json=payload,
                 )
                 if r.status_code == 200:
                     data = r.json()
                     self.token = data.get("access_token")
                     self.refresh_token = data.get("refresh_token")
                     self.user_id = data.get("user_id")
-                    logger.info(f"Playtomic login OK via {label} — user_id: {self.user_id}")
-                    # Debug: decode refresh token to check audience/claims
-                    try:
-                        rt_parts = self.refresh_token.split(".")
-                        rt_payload = json_module.loads(base64.b64decode(rt_parts[1] + "=="))
-                        logger.info(f"Login refresh_token claims: aud={rt_payload.get('aud')}, scopes={rt_payload.get('scopes')}")
-                    except Exception as e:
-                        logger.warning(f"Could not decode refresh_token: {e}")
+                    logger.info(f"Playtomic login OK ({fmt_label}) — user_id: {self.user_id}")
+
+                    # If the login token already carries UP_* write scopes
+                    # (new contract returns scoped tokens directly), use it
+                    # as tenant token too — no separate exchange needed.
+                    claims = self._decode_token_claims(self.token)
+                    scopes = claims.get("scopes", []) or []
+                    if any(str(s).startswith("UP_") for s in scopes):
+                        self.tenant_token = self.token
+                        self._tenant_token_claims = {
+                            "aud": claims.get("aud"),
+                            "scopes": scopes,
+                            "roles": [k for k in claims.keys() if k.startswith("role")],
+                            "via": f"login directo ({fmt_label})",
+                        }
+                        logger.info("Login token already has UP_* scopes — using as tenant token")
                     return True
                 else:
-                    logger.warning(f"Login via {label} failed: {r.status_code} {r.text[:300]}")
+                    logger.warning(f"Login ({fmt_label}) failed: {r.status_code} {r.text[:300]}")
             except Exception as e:
-                logger.warning(f"Login via {label} error: {e}")
+                logger.warning(f"Login ({fmt_label}) error: {e}")
 
-        logger.error("Playtomic login failed via all endpoints")
+        logger.error("Playtomic login failed via all payload formats")
         return False
 
     async def get_tenant_token(self) -> bool:

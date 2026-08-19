@@ -649,7 +649,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v18-speed", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v19-login-scopes", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None
@@ -664,6 +664,11 @@ async def api_playtomic_debug(date: str = Query(None)):
             login_r = await playtomic.client.post(login_url, json={
                 "email": os.getenv("PLAYTOMIC_EMAIL", ""),
                 "password": "***",  # masked
+                # New Aug-2026 contract: scopes required at login
+                "requested_user_scopes": [
+                    {"role": "ROLE_ACTIVITY_MANAGER", "scope_id": tenant_id},
+                    {"role": "ROLE_TENANT_MANAGER", "scope_id": tenant_id},
+                ],
             })
             results["login_test"] = {
                 "url": login_url,
