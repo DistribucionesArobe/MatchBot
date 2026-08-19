@@ -649,7 +649,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v19-login-scopes", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v20-court-in-list", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None

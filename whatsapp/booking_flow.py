@@ -247,10 +247,16 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
             courts = time_slots[t]
             n = len(courts)
             min_price = min(c["price"] for c in courts)
+            # Show WHICH court when only one; count when several
+            # (WhatsApp list description max = 72 chars)
+            if n == 1:
+                court_label = courts[0]["court"][:50]
+            else:
+                court_label = f"{n} canchas"
             rows.append({
                 "id": f"time_{t}",
                 "title": f"🕐 {t}",
-                "description": f"Total: ${min_price:.0f}",
+                "description": f"Total: ${min_price:.0f} · {court_label}"[:72],
             })
 
         sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
