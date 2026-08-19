@@ -147,6 +147,8 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         await _handle_payment(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "cancelling":
         await _handle_cancel_confirm(phone_id, token, wa_phone, club_id, text, button_id, data)
+    elif state == "cancel_confirming":
+        await _handle_cancel_final(phone_id, token, wa_phone, club_id, text, button_id, data)
     else:
         # Unknown input in idle state
         await _send_main_menu(phone_id, token, wa_phone, club.get("name", "MatchBot"))
@@ -735,7 +737,31 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
 # MY BOOKINGS
 # ─────────────────────────────────────────────────────
 
+def _fmt_match_local(utc_iso: str) -> str:
+    """'Mar 18/8 · 7:30 PM' from a UTC ISO datetime, in club local time."""
+    try:
+        dt = datetime.fromisoformat(utc_iso.replace("Z", "")[:19]) + timedelta(hours=CLUB_UTC_OFFSET)
+        ampm = dt.strftime("%I:%M %p").lstrip("0")
+        return f"{DAY_NAMES[dt.weekday()]} {dt.day}/{dt.month} · {ampm}"
+    except Exception:
+        return utc_iso[:16]
+
+
 async def _send_my_bookings(phone_id, token, to, club_id):
+    # ── PLAYTOMIC MODE ──
+    if USE_PLAYTOMIC:
+        matches = await playtomic.find_customer_matches(to)
+        if not matches:
+            await send_text(phone_id, token, to, "📋 No tienes reservas próximas.\n\nEscribe *Reservar* para hacer una.")
+            return
+        msg = "📋 *Tus próximas reservas:*\n\n"
+        for m in matches:
+            msg += f"✅ {_fmt_match_local(m['start'])}\n   🎾 {m['resource_name']}\n\n"
+        msg += "Para cancelar una, toca *Cancelar* en el menú."
+        await send_text(phone_id, token, to, msg)
+        return
+
+    # ── INTERNAL DB MODE ──
     bookings = get_customer_bookings(club_id, to)
 
     if not bookings:
@@ -759,6 +785,32 @@ async def _send_my_bookings(phone_id, token, to, club_id):
 # ─────────────────────────────────────────────────────
 
 async def _handle_cancel_start(phone_id, token, to, club_id):
+    # ── PLAYTOMIC MODE ──
+    if USE_PLAYTOMIC:
+        matches = await playtomic.find_customer_matches(to)
+        if not matches:
+            await send_text(phone_id, token, to, "No tienes reservas próximas que cancelar.")
+            return
+
+        rows = []
+        for i, m in enumerate(matches):
+            rows.append({
+                "id": f"pcancel_{i}",
+                "title": _fmt_match_local(m["start"])[:24],
+                "description": m["resource_name"][:72],
+            })
+
+        _set_state(club_id, to, "cancelling", {"pmatches": matches})
+
+        await send_interactive_list(
+            phone_id, token, to,
+            body="¿Cuál reserva quieres cancelar?",
+            button_text="Ver reservas",
+            sections=[{"title": "Tus reservas", "rows": rows[:10]}],
+        )
+        return
+
+    # ── INTERNAL DB MODE ──
     bookings = get_customer_bookings(club_id, to)
 
     if not bookings:
@@ -784,6 +836,30 @@ async def _handle_cancel_start(phone_id, token, to, club_id):
 
 
 async def _handle_cancel_confirm(phone_id, token, to, club_id, text, button_id, data):
+    # ── PLAYTOMIC: selection from list → ask for confirmation ──
+    if USE_PLAYTOMIC and button_id and button_id.startswith("pcancel_"):
+        idx = int(button_id.replace("pcancel_", ""))
+        pmatches = data.get("pmatches", [])
+        if idx >= len(pmatches):
+            await send_text(phone_id, token, to, "Selecciona una reserva de la lista.")
+            return
+        m = pmatches[idx]
+        data["cancel_target"] = m
+        _set_state(club_id, to, "cancel_confirming", data)
+        await send_interactive_buttons(
+            phone_id, token, to,
+            body=(
+                f"¿Seguro que quieres cancelar esta reserva?\n\n"
+                f"📅 {_fmt_match_local(m['start'])}\n"
+                f"🎾 {m['resource_name']}"
+            ),
+            buttons=[
+                {"id": "btn_cxl_yes", "title": "Sí, cancelar"},
+                {"id": "btn_cxl_no", "title": "No, conservarla"},
+            ],
+        )
+        return
+
     booking_id = None
     if button_id and button_id.startswith("cancel_"):
         booking_id = int(button_id.replace("cancel_", ""))
@@ -812,6 +888,53 @@ async def _handle_cancel_confirm(phone_id, token, to, club_id, text, button_id, 
     except BookingError as e:
         _set_state(club_id, to, "idle", {})
         await send_text(phone_id, token, to, f"😕 {str(e)}")
+
+
+async def _handle_cancel_final(phone_id, token, to, club_id, text, button_id, data):
+    """Playtomic: user confirmed (or declined) the cancellation."""
+    m = data.get("cancel_target", {})
+
+    if button_id == "btn_cxl_no" or (text and text.lower() in ("no", "conservar")):
+        _set_state(club_id, to, "idle", {})
+        await send_text(phone_id, token, to, "👍 Tu reserva sigue en pie. ¡Nos vemos en la cancha!")
+        return
+
+    if button_id == "btn_cxl_yes" or (text and text.lower() in ("si", "sí", "cancelar")):
+        if not m.get("match_id"):
+            _set_state(club_id, to, "idle", {})
+            await send_text(phone_id, token, to, "😕 No encontré la reserva. Intenta de nuevo con *Cancelar*.")
+            return
+
+        result = await playtomic.cancel_match(m["match_id"])
+        _set_state(club_id, to, "idle", {})
+
+        if result.get("success"):
+            await send_text(phone_id, token, to,
+                f"✅ *Reserva cancelada.*\n\n"
+                f"📅 {_fmt_match_local(m['start'])}\n"
+                f"🎾 {m['resource_name']}\n\n"
+                f"Escribe *Reservar* cuando quieras jugar de nuevo. 🎾"
+            )
+            # Notify club owner
+            if CLUB_NOTIFY_PHONE:
+                try:
+                    await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                        f"❌ *Cancelación vía bot*\n\n"
+                        f"👤 Cliente: {to}\n"
+                        f"📅 {_fmt_match_local(m['start'])}\n"
+                        f"🎾 {m['resource_name']}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify club about cancellation: {e}")
+        else:
+            logger.error(f"Playtomic cancel failed: {result.get('error')}")
+            await send_text(phone_id, token, to,
+                "😕 No pude cancelar la reserva por un problema técnico. "
+                "Por favor contacta al club directamente."
+            )
+        return
+
+    await send_text(phone_id, token, to, "Responde *Sí, cancelar* o *No, conservarla*.")
 
 
 # ─────────────────────────────────────────────────────

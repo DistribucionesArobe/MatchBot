@@ -125,31 +125,43 @@ async def _send_health_alert(problems: list[str]):
     await send_text(phone_id, token, notify, msg)
 
 
+_health_was_ok = True  # avoid repeated alerts; notify on state change only
+
+
 async def _daily_health_loop():
-    """Run the health check every day at 07:00 club local time."""
+    """Run the health check every 4 hours. Alert on failure, and send a
+    recovery message when the problem clears. Only alerts on STATE
+    CHANGES (no spam every 4h while broken)."""
+    global _health_was_ok
+    # Small delay after boot so deploys don't trigger noise
+    await asyncio.sleep(600)
     while True:
         try:
-            offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
-            # 07:00 local = (7 - offset) UTC, e.g. -6 → 13:00 UTC
-            target_utc_hour = (7 - offset) % 24
-            now = datetime.utcnow()
-            target = now.replace(hour=target_utc_hour, minute=0, second=0, microsecond=0)
-            if target <= now:
-                from datetime import timedelta as _td
-                target = target + _td(days=1)
-            await asyncio.sleep((target - now).total_seconds())
-
             problems = await _run_health_check()
             if problems:
-                logger.warning(f"Daily health check FAILED: {problems}")
-                await _send_health_alert(problems)
+                logger.warning(f"Health check FAILED: {problems}")
+                if _health_was_ok:
+                    await _send_health_alert(problems)
+                    _health_was_ok = False
             else:
-                logger.info("Daily health check OK")
+                logger.info("Health check OK")
+                if not _health_was_ok:
+                    _health_was_ok = True
+                    try:
+                        from whatsapp.sender import send_text
+                        phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+                        token = os.getenv("WHATSAPP_TOKEN", "")
+                        notify = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
+                        if phone_id and token:
+                            await send_text(phone_id, token, notify,
+                                "✅ *MatchBot se recuperó* — el sistema de reservas vuelve a funcionar con normalidad.")
+                    except Exception as e:
+                        logger.error(f"Recovery notice failed: {e}")
         except asyncio.CancelledError:
             return
         except Exception as e:
             logger.error(f"Health loop error: {e}")
-            await asyncio.sleep(3600)  # retry in an hour on unexpected errors
+        await asyncio.sleep(4 * 3600)  # every 4 hours
 
 
 @app.get("/api/health-check")
@@ -649,7 +661,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v20-court-in-list", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v21-cancel-flow", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None

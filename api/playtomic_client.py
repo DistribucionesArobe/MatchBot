@@ -1179,6 +1179,39 @@ class PlaytomicClient:
         logger.warning(f"Could not add player to match {match_id} via any endpoint")
 
     # ─── LIST MATCHES (for admin/cleanup) ───
+    async def find_customer_matches(self, customer_phone: str) -> list[dict]:
+        """Find UPCOMING matches belonging to a customer, matched by the
+        phone digits embedded in the guest player name
+        (bot bookings register players as 'Nombre (1234567890)').
+        Returns [{match_id, start (UTC iso), resource_name}] sorted by date.
+        """
+        digits = customer_phone.lstrip("+").strip()[-10:]
+        if not digits:
+            return []
+
+        matches = await self.list_matches()
+        now_utc_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        found = []
+        for m in matches:
+            status = str(m.get("status", "")).upper()
+            if "CANCEL" in status:
+                continue
+            start = m.get("start_date", "")
+            if not start or start[:19] <= now_utc_iso:
+                continue  # past or in progress
+            names = []
+            for t in m.get("teams", []):
+                for p in t.get("players", []):
+                    names.append(p.get("name") or "")
+            if any(digits in n for n in names):
+                found.append({
+                    "match_id": m.get("match_id", ""),
+                    "start": start,
+                    "resource_name": m.get("resource_name", ""),
+                })
+        found.sort(key=lambda x: x["start"])
+        return found[:10]
+
     async def list_matches(self, date_str: str = None) -> list:
         """List matches/bookings. If date_str given, filter to that local date.
         Queries ALL matches from Playtomic and filters client-side since
@@ -1200,8 +1233,8 @@ class PlaytomicClient:
                     f"{PLAYTOMIC_API}/v1/matches",
                     headers={"Authorization": f"Bearer {self.tenant_token}"},
                     params={
+                        # No sport_id filter: include PADEL and FOOTBALL7
                         "tenant_id": TENANT_ID,
-                        "sport_id": "PADEL",
                         "sort": sort_param,
                         "size": 200,
                     },
