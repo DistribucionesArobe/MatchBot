@@ -137,6 +137,8 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
     # ── STATE MACHINE ──
     if state == "choosing_date":
         await _handle_date_chosen(phone_id, token, wa_phone, club_id, text, button_id, data)
+    elif state == "choosing_daypart":
+        await _handle_daypart_chosen(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "choosing_time":
         await _handle_time_chosen(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "choosing_court":
@@ -229,48 +231,40 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
         # Store availability in state for later use
         data["playtomic_availability"] = availability
 
-        # Build list of times across all courts
-        time_slots = {}
-        for court in availability:
-            for slot in court["slots"]:
-                t = slot["time"]
-                if t not in time_slots:
-                    time_slots[t] = []
-                time_slots[t].append({
-                    "court": court["name"],
-                    "resource_id": slot["resource_id"],
-                    "price": slot["price"],
-                    "duration": slot["duration"],
-                    "start": slot["start"],
-                })
+        all_rows = _build_time_rows(availability)
 
-        rows = []
-        for t in sorted(time_slots.keys()):
-            courts = time_slots[t]
-            n = len(courts)
-            min_price = min(c["price"] for c in courts)
-            # Show WHICH court when only one; count when several
-            # (WhatsApp list description max = 72 chars)
-            if n == 1:
-                court_label = courts[0]["court"][:50]
-            else:
-                court_label = f"{n} canchas"
-            rows.append({
-                "id": f"time_{t}",
-                "title": f"🕐 {t}",
-                "description": f"Total: ${min_price:.0f} · {court_label}"[:72],
-            })
+        # WhatsApp lists allow MAX 10 rows. With half-hour slots the day
+        # can have 20+ — evening slots (the most requested) would never
+        # show. If it fits in one list, send it; otherwise ask for the
+        # part of the day first (Mañana / Tarde / Noche).
+        if len(all_rows) <= 10:
+            _set_state(club_id, to, "choosing_time", data)
+            day_label = DAY_NAMES[target.weekday()]
+            await send_interactive_list(
+                phone_id, token, to,
+                body=f"⏰ Horarios para *{day_label} {target.day}/{target.month}*\nSelecciona un horario:",
+                button_text="Ver horarios",
+                sections=[{"title": "Horarios disponibles", "rows": all_rows}],
+                footer=f"{len(all_rows)} horarios disponibles"
+            )
+            return
 
-        sections = [{"title": "Horarios disponibles", "rows": rows[:10]}]
-        _set_state(club_id, to, "choosing_time", data)
+        counts = _daypart_counts(all_rows)
+        buttons = []
+        if counts["manana"]:
+            buttons.append({"id": "part_manana", "title": f"🌅 Mañana ({counts['manana']})"})
+        if counts["tarde"]:
+            buttons.append({"id": "part_tarde", "title": f"☀️ Tarde ({counts['tarde']})"})
+        if counts["noche"]:
+            buttons.append({"id": "part_noche", "title": f"🌙 Noche ({counts['noche']})"})
 
+        _set_state(club_id, to, "choosing_daypart", data)
         day_label = DAY_NAMES[target.weekday()]
-        await send_interactive_list(
+        await send_interactive_buttons(
             phone_id, token, to,
-            body=f"⏰ Horarios para *{day_label} {target.day}/{target.month}*\nSelecciona un horario:",
-            button_text="Ver horarios",
-            sections=sections,
-            footer=f"{len(rows)} horarios disponibles"
+            body=f"⏰ *{day_label} {target.day}/{target.month}* — ¿A qué hora quieres jugar?",
+            buttons=buttons[:3],
+            footer="Mañana: antes de 12 · Tarde: 12-6 · Noche: después de 6"
         )
         return
 
@@ -303,6 +297,91 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
         button_text="Ver horarios",
         sections=sections,
         footer=f"{len(rows)} horarios disponibles"
+    )
+
+
+def _build_time_rows(availability: list) -> list:
+    """Build WhatsApp list rows (one per start time) from availability."""
+    time_slots = {}
+    for court in availability:
+        for slot in court["slots"]:
+            t = slot["time"]
+            time_slots.setdefault(t, []).append({
+                "court": court["name"],
+                "price": slot["price"],
+            })
+    rows = []
+    for t in sorted(time_slots.keys()):
+        courts = time_slots[t]
+        n = len(courts)
+        min_price = min(c["price"] for c in courts)
+        court_label = courts[0]["court"][:50] if n == 1 else f"{n} canchas"
+        rows.append({
+            "id": f"time_{t}",
+            "title": f"🕐 {t}",
+            "description": f"Total: ${min_price:.0f} · {court_label}"[:72],
+        })
+    return rows
+
+
+def _row_hour(row: dict) -> int:
+    """Extract the hour from a time row id like 'time_14:30'."""
+    try:
+        return int(row["id"].replace("time_", "").split(":")[0])
+    except (ValueError, KeyError):
+        return 0
+
+
+def _daypart_counts(rows: list) -> dict:
+    return {
+        "manana": sum(1 for r in rows if _row_hour(r) < 12),
+        "tarde": sum(1 for r in rows if 12 <= _row_hour(r) < 18),
+        "noche": sum(1 for r in rows if _row_hour(r) >= 18),
+    }
+
+
+async def _handle_daypart_chosen(phone_id, token, to, club_id, text, button_id, data):
+    """User picked Mañana/Tarde/Noche — show that block's time slots."""
+    part_map = {
+        "part_manana": ("manana", "🌅 Mañana"),
+        "part_tarde": ("tarde", "☀️ Tarde"),
+        "part_noche": ("noche", "🌙 Noche"),
+    }
+    if button_id not in part_map:
+        # Also accept typed text ("mañana", "tarde", "noche")
+        tl = (text or "").lower().strip()
+        if "noche" in tl:
+            button_id = "part_noche"
+        elif "tarde" in tl:
+            button_id = "part_tarde"
+        elif "mañana" in tl or "manana" in tl:
+            button_id = "part_manana"
+        else:
+            await send_text(phone_id, token, to, "Elige Mañana, Tarde o Noche con los botones.")
+            return
+
+    part, part_label = part_map[button_id]
+    availability = data.get("playtomic_availability", [])
+    all_rows = _build_time_rows(availability)
+
+    if part == "manana":
+        rows = [r for r in all_rows if _row_hour(r) < 12]
+    elif part == "tarde":
+        rows = [r for r in all_rows if 12 <= _row_hour(r) < 18]
+    else:
+        rows = [r for r in all_rows if _row_hour(r) >= 18]
+
+    if not rows:
+        await send_text(phone_id, token, to, "😕 Ya no hay horarios en ese bloque. Elige otro.")
+        return
+
+    _set_state(club_id, to, "choosing_time", data)
+    await send_interactive_list(
+        phone_id, token, to,
+        body=f"{part_label} — selecciona un horario:",
+        button_text="Ver horarios",
+        sections=[{"title": "Horarios disponibles", "rows": rows[:10]}],
+        footer=f"{min(len(rows), 10)} horarios" + (" (los primeros 10)" if len(rows) > 10 else "")
     )
 
 
