@@ -252,11 +252,11 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
         counts = _daypart_counts(all_rows)
         buttons = []
         if counts["manana"]:
-            buttons.append({"id": "part_manana", "title": f"🌅 Mañana ({counts['manana']})"})
+            buttons.append({"id": "part_manana", "title": "🌅 6:30 am - 12 pm"})
         if counts["tarde"]:
-            buttons.append({"id": "part_tarde", "title": f"☀️ Tarde ({counts['tarde']})"})
+            buttons.append({"id": "part_tarde", "title": "☀️ 12 pm - 6 pm"})
         if counts["noche"]:
-            buttons.append({"id": "part_noche", "title": f"🌙 Noche ({counts['noche']})"})
+            buttons.append({"id": "part_noche", "title": "🌙 6 pm - 11:30 pm"})
 
         _set_state(club_id, to, "choosing_daypart", data)
         day_label = DAY_NAMES[target.weekday()]
@@ -264,7 +264,7 @@ async def _handle_date_chosen(phone_id, token, to, club_id, text, button_id, dat
             phone_id, token, to,
             body=f"⏰ *{day_label} {target.day}/{target.month}* — ¿A qué hora quieres jugar?",
             buttons=buttons[:3],
-            footer="Mañana: antes de 12 · Tarde: 12-6 · Noche: después de 6"
+            footer="Escribe *salir* en cualquier momento para volver al menú"
         )
         return
 
@@ -375,13 +375,31 @@ async def _handle_daypart_chosen(phone_id, token, to, club_id, text, button_id, 
         await send_text(phone_id, token, to, "😕 Ya no hay horarios en ese bloque. Elige otro.")
         return
 
+    data["daypart"] = part
     _set_state(club_id, to, "choosing_time", data)
+    await _send_time_page(phone_id, token, to, rows, part_label, offset=0)
+
+
+async def _send_time_page(phone_id, token, to, rows, part_label, offset=0):
+    """Send a page of time slots. WhatsApp caps lists at 10 rows, so if
+    there are more, show 9 + a 'Ver más' row that loads the next page."""
+    remaining = rows[offset:]
+    if len(remaining) > 10:
+        page = remaining[:9]
+        page.append({
+            "id": f"tpage_{offset + 9}",
+            "title": "➡️ Ver más horarios",
+            "description": f"{len(remaining) - 9} horarios más",
+        })
+    else:
+        page = remaining
+
     await send_interactive_list(
         phone_id, token, to,
         body=f"{part_label} — selecciona un horario:",
         button_text="Ver horarios",
-        sections=[{"title": "Horarios disponibles", "rows": rows[:10]}],
-        footer=f"{min(len(rows), 10)} horarios" + (" (los primeros 10)" if len(rows) > 10 else "")
+        sections=[{"title": "Horarios disponibles", "rows": page}],
+        footer="Escribe *salir* para volver al menú"
     )
 
 
@@ -390,6 +408,26 @@ async def _handle_daypart_chosen(phone_id, token, to, club_id, text, button_id, 
 # ─────────────────────────────────────────────────────
 
 async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, data):
+    # "Ver más horarios" → next page of the current daypart block
+    if button_id and button_id.startswith("tpage_"):
+        try:
+            offset = int(button_id.replace("tpage_", ""))
+        except ValueError:
+            offset = 0
+        part = data.get("daypart", "")
+        part_labels = {"manana": "🌅 Mañana", "tarde": "☀️ Tarde", "noche": "🌙 Noche"}
+        all_rows = _build_time_rows(data.get("playtomic_availability", []))
+        if part == "manana":
+            rows = [r for r in all_rows if _row_hour(r) < 12]
+        elif part == "tarde":
+            rows = [r for r in all_rows if 12 <= _row_hour(r) < 18]
+        elif part == "noche":
+            rows = [r for r in all_rows if _row_hour(r) >= 18]
+        else:
+            rows = all_rows
+        await _send_time_page(phone_id, token, to, rows, part_labels.get(part, "⏰ Horarios"), offset=offset)
+        return
+
     time_str = None
     if button_id and button_id.startswith("time_"):
         time_str = button_id.replace("time_", "")
