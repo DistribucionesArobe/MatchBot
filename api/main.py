@@ -223,6 +223,26 @@ async def _daily_health_loop():
         await asyncio.sleep(4 * 3600)  # every 4 hours
 
 
+@app.get("/api/test-notify")
+async def api_test_notify():
+    """Send a test WhatsApp message to the club owner's notify phone."""
+    from whatsapp.sender import send_text
+    phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    notify = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
+    if not phone_id or not token:
+        return {"ok": False, "error": "WhatsApp credentials not configured"}
+    try:
+        await send_text(phone_id, token, notify,
+            "🔔 *Prueba de notificaciones MatchBot*\n\n"
+            "Si estás viendo este mensaje, las alertas al club funcionan correctamente. ✅\n\n"
+            "Por este medio te llegarán: nuevas reservas, cancelaciones, "
+            "premios de clientes frecuentes y alertas del sistema.")
+        return {"ok": True, "sent_to": notify}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
 @app.get("/api/health-check")
 async def api_health_check(send_alert: int = Query(0)):
     """Run the self-check now. ?send_alert=1 also sends the WhatsApp
