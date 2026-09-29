@@ -181,7 +181,7 @@ async def _send_main_menu(phone_id, token, to, club_name):
             {"id": "btn_cancelar", "title": "❌ Cancelar"},
         ],
         header="MatchBot",
-        footer="matchbot.live"
+        footer="🎟️ Escribe *sellos* para ver tu tarjeta de cliente"
     )
 
 
