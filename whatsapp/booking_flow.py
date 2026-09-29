@@ -36,6 +36,7 @@ from db.database import execute
 from api.availability import get_available_slots, get_slots_summary, check_slot_available
 from api.bookings import create_booking, cancel_booking, get_customer_bookings, BookingError
 from api.playtomic_client import playtomic
+from api import loyalty
 from whatsapp.sender import send_text, send_interactive_buttons, send_interactive_list
 
 # Use Playtomic for availability/booking if configured
@@ -65,6 +66,7 @@ BOOK_TRIGGERS = {"reservar", "reserva", "resevar", "resservar", "cancha", "jugar
 CANCEL_TRIGGERS = {"cancelar", "cancela", "cancel"}
 MY_BOOKINGS_TRIGGERS = {"mis reservas", "mis reservaciones", "my bookings", "mis partidos"}
 MENU_TRIGGERS = {"menu", "menú", "opciones", "ayuda", "help", "salir", "inicio", "volver"}
+LOYALTY_TRIGGERS = {"sellos", "sello", "tarjeta", "mis sellos", "puntos"}
 
 
 def _matches_any(text: str, triggers: set) -> bool:
@@ -127,6 +129,15 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         # ── MY BOOKINGS ──
         if _matches_any(text_lower, MY_BOOKINGS_TRIGGERS) or button_id == "btn_mis_reservas":
             await _send_my_bookings(phone_id, token, wa_phone, club_id)
+            return
+
+        # ── LOYALTY CARD ──
+        if _matches_any(text_lower, LOYALTY_TRIGGERS):
+            try:
+                await send_text(phone_id, token, wa_phone, loyalty.card_message(wa_phone))
+            except Exception as e:
+                logger.error(f"loyalty card message failed: {e}")
+                await send_text(phone_id, token, wa_phone, "😕 No pude consultar tu tarjeta ahora. Intenta más tarde.")
             return
 
         # ── CANCEL ──
@@ -629,6 +640,20 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             customer_phone = data.get("customer_phone", to)
 
             price = data["price_cents"] / 100
+
+            # ── Tarjeta de cliente frecuente: ¿tiene premio pendiente? ──
+            reward = None
+            reward_note = None
+            try:
+                reward = loyalty.get_unused_reward(to)
+            except Exception as e:
+                logger.error(f"loyalty reward lookup failed: {e}")
+            if reward:
+                if reward["reward_type"] == "free":
+                    reward_note = "🎁 PREMIO CLIENTE FRECUENTE: CANCHA GRATIS (10 sellos) — NO COBRAR"
+                else:
+                    reward_note = f"🎁 PREMIO CLIENTE FRECUENTE: 50% DESCUENTO (5 sellos) — COBRAR ${price/2:.0f}"
+
             result = await playtomic.create_booking(
                 resource_id=data["resource_id"],
                 start_time=data.get("start_iso", ""),
@@ -636,6 +661,7 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 customer_name=customer_name,
                 customer_phone=customer_phone,
                 slot_price=price,
+                private_notes=reward_note,
             )
 
             _set_state(club_id, to, "idle", {})
@@ -648,13 +674,41 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 date_label = data["date"]
 
             if result.get("success"):
+                match_id = result.get("match_id", "")
+
+                # Registrar sello pendiente (se confirma al jugar)
+                try:
+                    loyalty.record_booking(to, match_id, data.get("start_iso", ""), club_id)
+                    if reward and match_id:
+                        loyalty.use_reward(reward["id"], match_id)
+                except Exception as e:
+                    logger.error(f"loyalty tracking failed: {e}")
+
+                # Precio a mostrar según premio
+                if reward and reward["reward_type"] == "free":
+                    price_line = f"💰 ~${price:.0f}~ *GRATIS* 🎁 (premio 10 sellos)"
+                    pay_line = "🎉 ¡Esta va por cuenta de la casa!"
+                elif reward:
+                    price_line = f"💰 ~${price:.0f}~ *${price/2:.0f} MXN* 🎁 (premio 5 sellos: mitad de precio)"
+                    pay_line = "💵 Paga al llegar al club."
+                else:
+                    price_line = f"💰 ${price:.0f} MXN"
+                    pay_line = "💵 Paga al llegar al club."
+
+                try:
+                    stamps_now = loyalty.get_card(to)["in_cycle"]
+                    stamps_line = f"\n🎟️ Sellos: {stamps_now}/10 — se suma 1 al jugar. Escribe *sellos* para ver tu tarjeta."
+                except Exception:
+                    stamps_line = ""
+
                 confirmation_msg = (
                     f"✅ *¡Reserva confirmada!*\n\n"
                     f"📅 {date_label}\n"
                     f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
                     f"🎾 {data['court_name']}\n"
-                    f"💰 ${price:.0f} MXN\n\n"
-                    f"💵 Paga al llegar al club.\n"
+                    f"{price_line}\n\n"
+                    f"{pay_line}\n"
+                    f"{stamps_line}"
                     f"\n¡Nos vemos en la cancha! 🎾"
                 )
             else:
@@ -674,6 +728,7 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             if CLUB_NOTIFY_PHONE:
                 display_name = customer_name or "Sin nombre"
                 status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
+                reward_line = f"\n{reward_note}\n" if (reward_note and result.get("success")) else ""
                 try:
                     await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
                         f"🔔 *Nueva reserva por WhatsApp*\n\n"
@@ -681,7 +736,8 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                         f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"
                         f"📅 {date_label} a las {data['start_time']}\n"
                         f"🎾 {data['court_name']}\n"
-                        f"💰 ${price:.0f} MXN\n\n"
+                        f"💰 ${price:.0f} MXN\n"
+                        f"{reward_line}\n"
                         f"{status}"
                     )
                 except Exception as e:
@@ -1026,6 +1082,10 @@ async def _handle_cancel_final(phone_id, token, to, club_id, text, button_id, da
         _set_state(club_id, to, "idle", {})
 
         if result.get("success"):
+            try:
+                loyalty.mark_cancelled(m["match_id"])
+            except Exception as e:
+                logger.error(f"loyalty mark_cancelled failed: {e}")
             await send_text(phone_id, token, to,
                 f"✅ *Reserva cancelada.*\n\n"
                 f"📅 {_fmt_match_local(m['start'])}\n"

@@ -764,6 +764,7 @@ class PlaytomicClient:
         customer_name: str = "",
         customer_phone: str = "",
         slot_price: float = 0.0,
+        private_notes: str = None,
     ) -> dict:
         """
         Create a booking on Playtomic as the club manager.
@@ -864,7 +865,7 @@ class PlaytomicClient:
             "is_playtomic_managed": False,
             "max_players_per_team": max_per_team,
             "description": None,
-            "private_notes": None,
+            "private_notes": private_notes,
             # owner_id: bot bookings were stored with owner_id null, which
             # historically breaks the Manager detail panel. Set explicitly.
             "owner_id": self.user_id,
@@ -1179,6 +1180,26 @@ class PlaytomicClient:
         logger.warning(f"Could not add player to match {match_id} via any endpoint")
 
     # ─── LIST MATCHES (for admin/cleanup) ───
+    async def get_match(self, match_id: str) -> dict | None:
+        """Fetch a single match by id (for status checks)."""
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return None
+        headers = {
+            "Authorization": f"Bearer {self.tenant_token}",
+            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+            "x-authorization-scope": f"tenant:{TENANT_ID}",
+        }
+        try:
+            r = await self.client.get(
+                f"{MANAGER_API}/v1/matches/{match_id}", headers=headers,
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            logger.warning(f"get_match {match_id} failed: {e}")
+        return None
+
     async def find_customer_matches(self, customer_phone: str) -> list[dict]:
         """Find UPCOMING matches belonging to a customer, matched by the
         phone digits embedded in the guest player name

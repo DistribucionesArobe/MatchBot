@@ -68,7 +68,66 @@ async def startup():
     # Daily self-check with WhatsApp alert on failure
     asyncio.create_task(_daily_health_loop())
 
+    # Loyalty card: create tables + hourly stamp processing
+    try:
+        from api import loyalty
+        loyalty.ensure_tables()
+        logger.info("🎟️ Loyalty tables ready")
+    except Exception as e:
+        logger.warning(f"Loyalty tables init failed: {e}")
+    asyncio.create_task(_loyalty_loop())
+
     logger.info("🎾 MatchBot started — matchbot.live")
+
+
+# ─────────────────────────────────────────────────────
+# LOYALTY — hourly stamp confirmation + reward notices
+# ─────────────────────────────────────────────────────
+
+async def _loyalty_loop():
+    """Every hour: confirm stamps for played bookings and notify
+    customers (and the owner) when a reward is unlocked."""
+    from api import loyalty
+    from whatsapp.sender import send_text
+    await asyncio.sleep(300)  # wait for boot
+    while True:
+        try:
+            events = await loyalty.process_pending(playtomic)
+            phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+            token = os.getenv("WHATSAPP_TOKEN", "")
+            notify_owner = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
+            if phone_id and token:
+                for ev in events:
+                    try:
+                        if ev["event"] == "half":
+                            await send_text(phone_id, token, ev["phone"],
+                                "🎉 *¡Llegaste a 5 sellos!*\n\n"
+                                "Tu siguiente renta es a *MITAD DE PRECIO* 🎾\n"
+                                "Se aplica automáticamente en tu próxima reserva.\n\n"
+                                "Escribe *Reservar* para usarla.")
+                            await send_text(phone_id, token, notify_owner,
+                                f"🎟️ Cliente +{ev['phone']} llegó a 5 sellos — su próxima renta va a MITAD DE PRECIO.")
+                        elif ev["event"] == "free":
+                            await send_text(phone_id, token, ev["phone"],
+                                "🏆 *¡COMPLETASTE TU TARJETA — 10 SELLOS!*\n\n"
+                                "Tu siguiente renta es *GRATIS* 🎾🎉\n"
+                                "Se aplica automáticamente en tu próxima reserva "
+                                "y tu tarjeta empieza de nuevo.\n\n"
+                                "Escribe *Reservar* para usarla.")
+                            await send_text(phone_id, token, notify_owner,
+                                f"🏆 Cliente +{ev['phone']} completó 10 sellos — su próxima renta es GRATIS.")
+                        elif ev["event"] == "stamp":
+                            await send_text(phone_id, token, ev["phone"],
+                                f"🎟️ ¡Sello ganado por tu partido! Llevas *{ev['stamps']}/10*.\n"
+                                f"Al sello 5: mitad de precio · Al 10: cancha gratis.\n"
+                                f"Escribe *sellos* para ver tu tarjeta.")
+                    except Exception as e:
+                        logger.error(f"Loyalty notification failed: {e}")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Loyalty loop error: {e}")
+        await asyncio.sleep(3600)  # every hour
 
 
 # ─────────────────────────────────────────────────────
@@ -661,7 +720,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v23-daypart-pages", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v24-loyalty", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None
