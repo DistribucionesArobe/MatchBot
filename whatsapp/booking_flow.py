@@ -132,7 +132,7 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
             return
 
         # ── LOYALTY CARD ──
-        if _matches_any(text_lower, LOYALTY_TRIGGERS):
+        if _matches_any(text_lower, LOYALTY_TRIGGERS) or button_id == "btn_sellos":
             try:
                 await send_text(phone_id, token, wa_phone, loyalty.card_message(wa_phone))
             except Exception as e:
@@ -177,11 +177,11 @@ async def _send_main_menu(phone_id, token, to, club_name):
         body=f"👋 ¡Hola! Bienvenido a *{club_name}*\n\n¿Qué deseas hacer?",
         buttons=[
             {"id": "btn_reservar", "title": "🎾 Reservar cancha"},
-            {"id": "btn_mis_reservas", "title": "📋 Mis reservas"},
-            {"id": "btn_cancelar", "title": "❌ Cancelar"},
+            {"id": "btn_cancelar", "title": "❌ Cancelar reserva"},
+            {"id": "btn_sellos", "title": "🎟️ Mis sellos"},
         ],
         header="MatchBot",
-        footer="🎟️ Escribe *sellos* para ver tu tarjeta de cliente"
+        footer="matchbot.live"
     )
 
 
@@ -930,8 +930,11 @@ async def _send_my_bookings(phone_id, token, to, club_id):
         msg = "📋 *Tus próximas reservas:*\n\n"
         for m in matches:
             msg += f"✅ {_fmt_match_local(m['start'])}\n   🎾 {m['resource_name']}\n\n"
-        msg += "Para cancelar una, toca *Cancelar* en el menú."
-        await send_text(phone_id, token, to, msg)
+        await send_interactive_buttons(
+            phone_id, token, to,
+            body=msg.strip(),
+            buttons=[{"id": "btn_cancelar", "title": "❌ Cancelar reserva"}],
+        )
         return
 
     # ── INTERNAL DB MODE ──
