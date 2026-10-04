@@ -885,6 +885,127 @@ async def api_playtomic_debug(date: str = Query(None)):
 # Health check
 # ─────────────────────────────────────────────────────
 
+@app.get("/reservas", response_class=HTMLResponse)
+async def reservas_dashboard():
+    """Dashboard de reservas: hoy y próximos días, desde Playtomic."""
+    from datetime import timedelta as _td
+    offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+    now_local = datetime.utcnow() + _td(hours=offset)
+    today_local = now_local.date()
+
+    matches = await playtomic.list_matches()
+
+    DAYS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    MONTHS = ["", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+    # Parse + filter: from today (local) onwards, not cancelled
+    upcoming = []
+    for m in matches:
+        try:
+            start_utc = datetime.fromisoformat(str(m.get("start_date", ""))[:19])
+        except ValueError:
+            continue
+        start_local = start_utc + _td(hours=offset)
+        if start_local.date() < today_local:
+            continue
+        status = str(m.get("status", "")).upper()
+        if "CANCEL" in status:
+            continue
+        players = []
+        is_bot = False
+        for t in m.get("teams", []):
+            for p in t.get("players", []):
+                nm = p.get("name") or ""
+                if nm:
+                    players.append(nm)
+                mid = str(p.get("merchant_player_id") or "")
+                # Bot bookings: guest id + phone digits in the name
+                if mid.startswith("guest:") and "(" in nm and ")" in nm:
+                    is_bot = True
+        upcoming.append({
+            "local": start_local,
+            "court": m.get("resource_name", "?"),
+            "players": ", ".join(players) or "—",
+            "status": status,
+            "bot": is_bot,
+            "sport": m.get("sport_id", ""),
+        })
+
+    upcoming.sort(key=lambda x: x["local"])
+
+    n_today = sum(1 for u in upcoming if u["local"].date() == today_local)
+    n_tomorrow = sum(1 for u in upcoming if u["local"].date() == today_local + _td(days=1))
+    n_week = sum(1 for u in upcoming if u["local"].date() <= today_local + _td(days=7))
+    n_bot = sum(1 for u in upcoming if u["bot"])
+    pct_bot = round(100 * n_bot / len(upcoming)) if upcoming else 0
+
+    # Group by day
+    groups = {}
+    for u in upcoming:
+        groups.setdefault(u["local"].date(), []).append(u)
+
+    rows_html = ""
+    for day in sorted(groups.keys()):
+        if day == today_local:
+            day_label = f"HOY · {DAYS[day.weekday()]} {day.day} {MONTHS[day.month]}"
+        elif day == today_local + _td(days=1):
+            day_label = f"MAÑANA · {DAYS[day.weekday()]} {day.day} {MONTHS[day.month]}"
+        else:
+            day_label = f"{DAYS[day.weekday()]} {day.day} {MONTHS[day.month]}"
+        rows_html += f'<tr><td colspan="4" class="day-header">{day_label} <span class="day-count">({len(groups[day])} reservas)</span></td></tr>'
+        for u in groups[day]:
+            hora = u["local"].strftime("%I:%M %p").lstrip("0")
+            badge = '<span class="badge bot">🤖 Bot</span>' if u["bot"] else '<span class="badge club">🏢 Club</span>'
+            sport_icon = "⚽" if "FOOT" in u["sport"] else "🎾"
+            rows_html += (
+                f'<tr><td class="hora">{hora}</td>'
+                f'<td>{sport_icon} {u["court"]}</td>'
+                f'<td class="players">{u["players"]}</td>'
+                f'<td>{badge}</td></tr>'
+            )
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="4" style="text-align:center;padding:2rem;color:#6b7280;">No hay reservas próximas</td></tr>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reservas — MatchBot</title>
+<style>
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#0f172a; color:#e2e8f0; padding:1.5rem; }}
+h1 {{ font-size:1.3rem; margin-bottom:0.25rem; }}
+.sub {{ color:#64748b; font-size:0.8rem; margin-bottom:1.5rem; }}
+.cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:0.75rem; margin-bottom:1.5rem; }}
+.card {{ background:#1e293b; border:1px solid #334155; border-radius:12px; padding:1rem; }}
+.card .num {{ font-size:1.8rem; font-weight:800; color:#10b981; }}
+.card .lbl {{ font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em; margin-top:0.25rem; }}
+table {{ width:100%; border-collapse:collapse; background:#1e293b; border-radius:12px; overflow:hidden; }}
+td {{ padding:0.6rem 0.9rem; font-size:0.85rem; border-bottom:1px solid #27354a; }}
+.day-header {{ background:#0c4a37; color:#6ee7b7; font-weight:800; font-size:0.78rem; letter-spacing:0.04em; }}
+.day-count {{ color:#94a3b8; font-weight:400; }}
+.hora {{ font-weight:700; color:#f59e0b; white-space:nowrap; }}
+.players {{ color:#cbd5e1; }}
+.badge {{ font-size:0.68rem; font-weight:700; padding:2px 8px; border-radius:6px; }}
+.badge.bot {{ background:#064e3b; color:#6ee7b7; }}
+.badge.club {{ background:#1e3a8a; color:#93c5fd; }}
+.links {{ margin-top:1.25rem; font-size:0.8rem; }}
+.links a {{ color:#10b981; text-decoration:none; margin-right:1rem; }}
+</style></head><body>
+<h1>📅 Reservas — Club de Padel Victoria</h1>
+<div class="sub">Actualizado: {now_local.strftime("%d/%m/%Y %I:%M %p").lstrip("0")} (hora local) · Recarga la página para actualizar</div>
+<div class="cards">
+  <div class="card"><div class="num">{n_today}</div><div class="lbl">Hoy</div></div>
+  <div class="card"><div class="num">{n_tomorrow}</div><div class="lbl">Mañana</div></div>
+  <div class="card"><div class="num">{n_week}</div><div class="lbl">Próximos 7 días</div></div>
+  <div class="card"><div class="num">{pct_bot}%</div><div class="lbl">Hechas por el bot</div></div>
+</div>
+<table>{rows_html}</table>
+<div class="links"><a href="/stats">📊 Uso del bot</a><a href="/reservas">🔄 Actualizar</a></div>
+</body></html>"""
+    return HTMLResponse(html)
+
+
 @app.get("/stats", response_class=HTMLResponse)
 async def bot_stats():
     """Bot usage dashboard — visual stats page."""
