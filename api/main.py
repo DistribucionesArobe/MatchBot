@@ -885,6 +885,13 @@ async def api_playtomic_debug(date: str = Query(None)):
 # Health check
 # ─────────────────────────────────────────────────────
 
+@app.get("/panel", response_class=HTMLResponse)
+async def admin_panel(date: str = Query(None)):
+    """Panel de administración estilo Playtomic Manager."""
+    from api.panel import render_panel
+    return HTMLResponse(await render_panel(playtomic, date))
+
+
 @app.get("/reservas", response_class=HTMLResponse)
 async def reservas_dashboard():
     """Dashboard de reservas: hoy y próximos días, desde Playtomic."""
