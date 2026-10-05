@@ -1245,22 +1245,33 @@ class PlaytomicClient:
         all_matches = []
 
         try:
-            # Query without date filter — API ignores it anyway.
-            # Only desc (most recent first): upcoming bookings are always
-            # within the newest 200 matches. (asc returned the OLDEST
-            # matches — useless — and doubled the latency.)
-            for sort_param in ["start_date:desc"]:
-                r = await self.client.get(
-                    f"{PLAYTOMIC_API}/v1/matches",
-                    headers={"Authorization": f"Bearer {self.tenant_token}"},
-                    params={
-                        # No sport_id filter: include PADEL and FOOTBALL7
-                        "tenant_id": TENANT_ID,
-                        "sort": sort_param,
-                        "size": 200,
-                    },
-                )
-                logger.info(f"List matches ({sort_param}): {r.status_code}")
+            # IMPORTANT: the API requires sport_id — without it the list
+            # comes back EMPTY. Query both sports IN PARALLEL and merge.
+            # desc (most recent first): upcoming bookings are always
+            # within the newest 200 matches per sport.
+            import asyncio as _aio
+
+            async def _fetch_sport(sport: str):
+                try:
+                    return await self.client.get(
+                        f"{PLAYTOMIC_API}/v1/matches",
+                        headers={"Authorization": f"Bearer {self.tenant_token}"},
+                        params={
+                            "tenant_id": TENANT_ID,
+                            "sport_id": sport,
+                            "sort": "start_date:desc",
+                            "size": 200,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(f"List matches {sport} failed: {e}")
+                    return None
+
+            responses = await _aio.gather(_fetch_sport("PADEL"), _fetch_sport("FOOTBALL7"))
+            for r in responses:
+                if r is None:
+                    continue
+                logger.info(f"List matches: {r.status_code}")
                 if r.status_code == 200:
                     data = r.json()
                     if isinstance(data, list):
