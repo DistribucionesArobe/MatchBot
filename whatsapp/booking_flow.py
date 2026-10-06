@@ -131,6 +131,27 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
             await _send_my_bookings(phone_id, token, wa_phone, club_id)
             return
 
+        # ── PROMO BROADCAST (solo el dueño) ──
+        if wa_phone == CLUB_NOTIFY_PHONE and text_lower.startswith("promo:"):
+            promo_text = text.split(":", 1)[1].strip()
+            if not promo_text:
+                await send_text(phone_id, token, wa_phone, "Escribe la promo así: *promo: 2x1 este jueves*")
+                return
+            from api import promos
+            import asyncio as _aio
+            await send_text(phone_id, token, wa_phone, "📣 Enviando promo a todos los clientes... te aviso al terminar.")
+            _aio.create_task(promos.broadcast(phone_id, token, promo_text, CLUB_NOTIFY_PHONE))
+            return
+
+        # ── BAJA (opt-out de promociones) ──
+        if text_lower in ("baja", "no promociones", "stop", "cancelar promociones"):
+            from api import promos
+            promos.opt_out(wa_phone)
+            await send_text(phone_id, token, wa_phone,
+                "✅ Listo, ya no recibirás promociones. "
+                "Puedes seguir usando el bot para reservar normalmente.")
+            return
+
         # ── LOYALTY CARD ──
         if _matches_any(text_lower, LOYALTY_TRIGGERS) or button_id == "btn_sellos":
             try:

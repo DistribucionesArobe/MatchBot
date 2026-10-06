@@ -73,6 +73,8 @@ async def startup():
         from api import loyalty
         loyalty.ensure_tables()
         logger.info("🎟️ Loyalty tables ready")
+        from api import promos
+        promos.ensure_tables()
     except Exception as e:
         logger.warning(f"Loyalty tables init failed: {e}")
     asyncio.create_task(_loyalty_loop())
@@ -221,6 +223,24 @@ async def _daily_health_loop():
         except Exception as e:
             logger.error(f"Health loop error: {e}")
         await asyncio.sleep(4 * 3600)  # every 4 hours
+
+
+@app.get("/api/create-promo-template")
+async def api_create_promo_template():
+    """Crea la plantilla de promos 'promo_club' via API de Meta."""
+    from api import promos
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    if not token:
+        return {"ok": False, "error": "WHATSAPP_TOKEN no configurado"}
+    return await promos.create_promo_template(token)
+
+
+@app.get("/api/promo-template-status")
+async def api_promo_template_status():
+    """Estado de aprobacion de la plantilla de promos."""
+    from api import promos
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    return await promos.template_status(token)
 
 
 @app.get("/api/test-notify")
@@ -679,7 +699,8 @@ async def api_playtomic_matches_list(date: str = Query(...)):
             "owner_id": m.get("owner_id"),
             "origin": m.get("match_origin"),
         })
-    return {"count": len(out), "matches": out}
+    return {"count": len(out), "matches": out,
+            "list_debug": getattr(playtomic, "_last_list_debug", {})}
 
 
 @app.get("/api/playtomic/match-raw")

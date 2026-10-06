@@ -1255,7 +1255,11 @@ class PlaytomicClient:
                 try:
                     return await self.client.get(
                         f"{PLAYTOMIC_API}/v1/matches",
-                        headers={"Authorization": f"Bearer {self.tenant_token}"},
+                        headers={
+                            "Authorization": f"Bearer {self.tenant_token}",
+                            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+                            "x-authorization-scope": f"tenant:{TENANT_ID}",
+                        },
                         params={
                             "tenant_id": TENANT_ID,
                             "sport_id": sport,
@@ -1267,11 +1271,15 @@ class PlaytomicClient:
                     logger.warning(f"List matches {sport} failed: {e}")
                     return None
 
+            self._last_list_debug = {}
             responses = await _aio.gather(_fetch_sport("PADEL"), _fetch_sport("FOOTBALL7"))
-            for r in responses:
+            for i, r in enumerate(responses):
+                sport_lbl = ["PADEL", "FOOTBALL7"][i]
                 if r is None:
+                    self._last_list_debug[sport_lbl] = "exception"
                     continue
-                logger.info(f"List matches: {r.status_code}")
+                self._last_list_debug[sport_lbl] = f"{r.status_code}" + ("" if r.status_code == 200 else f": {r.text[:120]}")
+                logger.info(f"List matches {sport_lbl}: {r.status_code}")
                 if r.status_code == 200:
                     data = r.json()
                     if isinstance(data, list):

@@ -79,6 +79,28 @@ async def send_interactive_list(
     await _send(phone_id, token, msg)
 
 
+async def send_template(phone_id: str, token: str, to: str,
+                        template_name: str, body_params: list[str],
+                        lang: str = "es_MX"):
+    """Send an approved template message (required outside the 24h window)."""
+    components = []
+    if body_params:
+        components.append({
+            "type": "body",
+            "parameters": [{"type": "text", "text": p} for p in body_params],
+        })
+    await _send(phone_id, token, {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": lang},
+            "components": components,
+        },
+    })
+
+
 async def _send(phone_id: str, token: str, payload: dict):
     """Internal: POST to WhatsApp Cloud API."""
     url = f"{settings.wa_api_url}/{phone_id}/messages"
