@@ -233,6 +233,10 @@ async def api_find_waba(candidates: str = Query("")):
     target_phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
     results = {"target_phone_id": target_phone_id, "checked": {}}
     ids = [c.strip() for c in candidates.split(",") if c.strip()]
+    if not ids:
+        # WABAs vistos en el Business Manager del usuario (oct 2026)
+        ids = ["4498523450386715", "2498253880588976", "1651710629422822",
+               "1433446114449373", "1224835083125902", "2463184987468277"]
     async with _hx.AsyncClient(timeout=20) as client:
         for waba in ids:
             try:
