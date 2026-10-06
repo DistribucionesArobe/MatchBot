@@ -225,13 +225,45 @@ async def _daily_health_loop():
         await asyncio.sleep(4 * 3600)  # every 4 hours
 
 
+@app.get("/api/find-waba")
+async def api_find_waba(candidates: str = Query("")):
+    """Busca en que WABA vive el numero del bot (PHONE_NUMBER_ID_PADEL)."""
+    import httpx as _hx
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    target_phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+    results = {"target_phone_id": target_phone_id, "checked": {}}
+    ids = [c.strip() for c in candidates.split(",") if c.strip()]
+    async with _hx.AsyncClient(timeout=20) as client:
+        for waba in ids:
+            try:
+                r = await client.get(
+                    f"https://graph.facebook.com/v25.0/{waba}/phone_numbers",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if r.status_code == 200:
+                    nums = r.json().get("data", [])
+                    results["checked"][waba] = [
+                        {"id": n.get("id"), "display": n.get("display_phone_number"),
+                         "name": n.get("verified_name")} for n in nums
+                    ]
+                    if any(str(n.get("id")) == target_phone_id for n in nums):
+                        results["FOUND"] = waba
+                else:
+                    results["checked"][waba] = f"{r.status_code}: {r.text[:120]}"
+            except Exception as e:
+                results["checked"][waba] = f"error: {str(e)[:100]}"
+    return results
+
+
 @app.get("/api/create-promo-template")
-async def api_create_promo_template():
+async def api_create_promo_template(waba_id: str = Query(None)):
     """Crea la plantilla de promos 'promo_club' via API de Meta."""
     from api import promos
     token = os.getenv("WHATSAPP_TOKEN", "")
     if not token:
         return {"ok": False, "error": "WHATSAPP_TOKEN no configurado"}
+    if waba_id:
+        os.environ["WABA_ID"] = waba_id  # override para esta sesion
     return await promos.create_promo_template(token)
 
 
