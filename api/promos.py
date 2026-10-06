@@ -73,11 +73,33 @@ def all_customer_phones(exclude: set = None) -> list[str]:
 
 # ─── Creación de la plantilla vía API de Meta ────────
 
+# WABAs del Business Manager del usuario (oct 2026). El numero del
+# bot (PHONE_NUMBER_ID_PADEL) vive en el WABA "Aceromax".
+KNOWN_WABAS = ["1651710629422822", "1224835083125902", "4498523450386715"]
+
+
 async def discover_waba_id(token: str) -> str | None:
-    """Find the WhatsApp Business Account id for this token."""
+    """Find the WhatsApp Business Account id that owns the bot number."""
     env_waba = os.getenv("WABA_ID", "")
     if env_waba:
         return env_waba
+
+    # Scan known WABAs for the bot's phone number id
+    target = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+    if target:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                for waba in KNOWN_WABAS:
+                    r = await client.get(
+                        f"{GRAPH}/{waba}/phone_numbers",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if r.status_code == 200:
+                        for n in r.json().get("data", []):
+                            if str(n.get("id")) == target:
+                                return waba
+        except Exception as e:
+            logger.warning(f"WABA scan failed: {e}")
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get(
