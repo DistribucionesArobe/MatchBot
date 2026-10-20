@@ -70,7 +70,7 @@ LOYALTY_TRIGGERS = {"sellos", "sello", "tarjeta", "mis sellos", "puntos"}
 CLASS_TRIGGERS = {"clase", "clases", "entrenador", "profe", "entrenamiento"}
 
 # Precio de la clase (env CLASS_PRICE, en MXN). 0 = "el club confirma costo".
-CLASS_PRICE = float(os.getenv("CLASS_PRICE", "0"))
+CLASS_PRICE = float(os.getenv("CLASS_PRICE", "600"))
 # A quién avisar para asignar profe (coordinación de profes)
 CLASS_NOTIFY_PHONE = os.getenv("CLASS_NOTIFY_PHONE", "528342546466")
 
