@@ -214,10 +214,10 @@ async def _send_main_menu(phone_id, token, to, club_name):
         buttons=[
             {"id": "btn_reservar", "title": "🎾 Reservar cancha"},
             {"id": "btn_cancelar", "title": "❌ Cancelar reserva"},
-            {"id": "btn_sellos", "title": "🎟️ Mis sellos"},
+            {"id": "btn_clase", "title": "🎓 Reservar clase"},
         ],
         header="MatchBot",
-        footer="🎓 ¿Quieres clase con profe? Escribe *clase*"
+        footer="🎟️ Escribe *sellos* para ver tu tarjeta de cliente"
     )
 
 
