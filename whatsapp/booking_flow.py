@@ -807,8 +807,9 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             # Notify profes/coordinación about new CLASS request
             if is_class and result.get("success") and CLASS_NOTIFY_PHONE:
                 try:
+                    from api.promos import send_alert as _send_alert
                     class_price_txt = f"${CLASS_PRICE:.0f} MXN" if CLASS_PRICE > 0 else "por confirmar"
-                    await send_text(phone_id, token, CLASS_NOTIFY_PHONE,
+                    await _send_alert(phone_id, token, CLASS_NOTIFY_PHONE,
                         f"🎓 *Nueva CLASE solicitada — ASIGNAR PROFE*\n\n"
                         f"👤 {customer_name or 'Sin nombre'}\n"
                         f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"

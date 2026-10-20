@@ -158,6 +158,61 @@ async def create_promo_template(token: str) -> dict:
         return {"ok": False, "error": str(e)[:300]}
 
 
+ALERT_TEMPLATE = "aviso_club"
+
+
+async def create_alert_template(token: str) -> dict:
+    """Create the 'aviso_club' UTILITY template (internal alerts —
+    delivered without the 24h window restriction)."""
+    waba = await discover_waba_id(token)
+    if not waba:
+        return {"ok": False, "error": "WABA ID no disponible"}
+    payload = {
+        "name": ALERT_TEMPLATE,
+        "language": TEMPLATE_LANG,
+        "category": "UTILITY",
+        "components": [
+            {
+                "type": "BODY",
+                "text": "🔔 *Aviso del sistema MatchBot*\n\n{{1}}",
+                "example": {"body_text": [["Nueva clase solicitada para el jueves 7 pm"]]},
+            },
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{GRAPH}/{waba}/message_templates",
+                headers={"Authorization": f"Bearer {token}"},
+                json=payload,
+            )
+            body = r.json() if r.text else {}
+            if r.status_code in (200, 201):
+                return {"ok": True, "response": body}
+            return {"ok": False, "status": r.status_code, "response": body}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+async def send_alert(phone_id: str, token: str, to: str, text: str):
+    """Send an internal alert: free-form first; if WhatsApp rejects it
+    (24h window closed), fall back to the 'aviso_club' template."""
+    from whatsapp.sender import send_text, send_template
+    try:
+        await send_text(phone_id, token, to, text)
+        return True
+    except Exception as e:
+        logger.warning(f"send_alert free-form failed ({e}); trying template")
+    try:
+        # Template body param can't contain newlines → flatten
+        flat = " · ".join(ln.strip() for ln in text.splitlines() if ln.strip())
+        await send_template(phone_id, token, to, ALERT_TEMPLATE, [flat[:900]], TEMPLATE_LANG)
+        return True
+    except Exception as e:
+        logger.error(f"send_alert template failed: {e}")
+        return False
+
+
 async def template_status(token: str) -> dict:
     """Check approval status of the promo template."""
     waba = await discover_waba_id(token)

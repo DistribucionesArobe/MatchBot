@@ -271,6 +271,14 @@ async def api_create_promo_template(waba_id: str = Query(None)):
     return await promos.create_promo_template(token)
 
 
+@app.get("/api/create-alert-template")
+async def api_create_alert_template():
+    """Crea la plantilla UTILITY 'aviso_club' para alertas internas."""
+    from api import promos
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    return await promos.create_alert_template(token)
+
+
 @app.get("/api/promo-template-status")
 async def api_promo_template_status():
     """Estado de aprobacion de la plantilla de promos."""
