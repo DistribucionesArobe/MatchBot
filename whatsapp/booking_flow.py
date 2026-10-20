@@ -67,6 +67,12 @@ CANCEL_TRIGGERS = {"cancelar", "cancela", "cancel"}
 MY_BOOKINGS_TRIGGERS = {"mis reservas", "mis reservaciones", "my bookings", "mis partidos"}
 MENU_TRIGGERS = {"menu", "menú", "opciones", "ayuda", "help", "salir", "inicio", "volver"}
 LOYALTY_TRIGGERS = {"sellos", "sello", "tarjeta", "mis sellos", "puntos"}
+CLASS_TRIGGERS = {"clase", "clases", "entrenador", "profe", "entrenamiento"}
+
+# Precio de la clase (env CLASS_PRICE, en MXN). 0 = "el club confirma costo".
+CLASS_PRICE = float(os.getenv("CLASS_PRICE", "0"))
+# A quién avisar para asignar profe (coordinación de profes)
+CLASS_NOTIFY_PHONE = os.getenv("CLASS_NOTIFY_PHONE", "528342546466")
 
 
 def _matches_any(text: str, triggers: set) -> bool:
@@ -124,6 +130,15 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
                 initial_data["customer_name"] = profile_name
             _set_state(club_id, wa_phone, "choosing_date", initial_data)
             await _send_date_picker(phone_id, token, wa_phone)
+            return
+
+        # ── START CLASS BOOKING ──
+        if _matches_any(text_lower, CLASS_TRIGGERS) or button_id == "btn_clase":
+            initial_data = {"customer_phone": wa_phone, "is_class": True}
+            if profile_name:
+                initial_data["customer_name"] = profile_name
+            _set_state(club_id, wa_phone, "choosing_date", initial_data)
+            await _send_date_picker(phone_id, token, wa_phone, is_class=True)
             return
 
         # ── MY BOOKINGS ──
@@ -202,7 +217,7 @@ async def _send_main_menu(phone_id, token, to, club_name):
             {"id": "btn_sellos", "title": "🎟️ Mis sellos"},
         ],
         header="MatchBot",
-        footer="matchbot.live"
+        footer="🎓 ¿Quieres clase con profe? Escribe *clase*"
     )
 
 
@@ -210,7 +225,7 @@ async def _send_main_menu(phone_id, token, to, club_name):
 # DATE PICKER (next 7 days as list)
 # ─────────────────────────────────────────────────────
 
-async def _send_date_picker(phone_id, token, to):
+async def _send_date_picker(phone_id, token, to, is_class=False):
     today = _local_today()
     rows = []
     for i in range(7):
@@ -225,10 +240,10 @@ async def _send_date_picker(phone_id, token, to):
 
     await send_interactive_list(
         phone_id, token, to,
-        body="📅 ¿Para qué día quieres reservar?",
+        body="🎓 ¿Para qué día quieres tu clase de pádel?" if is_class else "📅 ¿Para qué día quieres reservar?",
         button_text="Ver días",
         sections=[{"title": "Próximos 7 días", "rows": rows}],
-        header="Reservar Cancha",
+        header="Reservar Clase" if is_class else "Reservar Cancha",
     )
 
 
@@ -489,8 +504,9 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
             await send_text(phone_id, token, to, "😕 Ese horario ya no está disponible. Intenta otro.")
             return
 
-        if len(matching) == 1:
-            c = matching[0]
+        if len(matching) == 1 or data.get("is_class"):
+            # Clases: el cliente no elige cancha — se toma una libre
+            c = min(matching, key=lambda x: x["price"]) if data.get("is_class") else matching[0]
             data["court_name"] = c["court_name"]
             data["resource_id"] = c["resource_id"]
             data["price_cents"] = int(c["price"] * 100)
@@ -626,16 +642,32 @@ async def _send_confirmation(phone_id, token, to, data):
     # Format phone for display (e.g. 521234567890 → +52 1234567890)
     phone_display = f"+{customer_phone[:2]} {customer_phone[2:]}" if len(customer_phone) > 5 else customer_phone
 
-    body = (
-        f"📋 *Resumen de tu reserva:*\n\n"
-        f"👤 {customer_name}\n"
-        f"📱 {phone_display}\n"
-        f"📅 {date_label}\n"
-        f"🕐 {data['start_time']} ({duration}min)\n"
-        f"🎾 {data['court_name']}\n"
-        f"💰 *${price:.0f} MXN*\n\n"
-        f"¿Confirmas la reserva?"
-    )
+    if data.get("is_class"):
+        if CLASS_PRICE > 0:
+            price_line = f"💰 *${CLASS_PRICE:.0f} MXN* (clase)"
+        else:
+            price_line = "💰 El club te confirmará el costo"
+        body = (
+            f"🎓 *Resumen de tu clase de pádel:*\n\n"
+            f"👤 {customer_name}\n"
+            f"📱 {phone_display}\n"
+            f"📅 {date_label}\n"
+            f"🕐 {data['start_time']} ({duration}min)\n"
+            f"{price_line}\n\n"
+            f"El club te asignará un profe y te contactará.\n"
+            f"¿Confirmas tu clase?"
+        )
+    else:
+        body = (
+            f"📋 *Resumen de tu reserva:*\n\n"
+            f"👤 {customer_name}\n"
+            f"📱 {phone_display}\n"
+            f"📅 {date_label}\n"
+            f"🕐 {data['start_time']} ({duration}min)\n"
+            f"🎾 {data['court_name']}\n"
+            f"💰 *${price:.0f} MXN*\n\n"
+            f"¿Confirmas la reserva?"
+        )
 
     await send_interactive_buttons(
         phone_id, token, to,
@@ -665,24 +697,38 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             # ── Tarjeta de cliente frecuente: ¿tiene premio pendiente? ──
             reward = None
             reward_note = None
-            try:
-                reward = loyalty.get_unused_reward(to)
-            except Exception as e:
-                logger.error(f"loyalty reward lookup failed: {e}")
+            is_class = bool(data.get("is_class"))
+            if not is_class:
+                try:
+                    reward = loyalty.get_unused_reward(to)
+                except Exception as e:
+                    logger.error(f"loyalty reward lookup failed: {e}")
             if reward:
                 if reward["reward_type"] == "free":
                     reward_note = "🎁 PREMIO CLIENTE FRECUENTE: CANCHA GRATIS (10 sellos) — NO COBRAR"
                 else:
                     reward_note = f"🎁 PREMIO CLIENTE FRECUENTE: 50% DESCUENTO (5 sellos) — COBRAR ${price/2:.0f}"
 
+            if is_class:
+                booking_name = f"CLASE {customer_name}".strip()
+                class_price_txt = f"${CLASS_PRICE:.0f}" if CLASS_PRICE > 0 else "por confirmar"
+                booking_notes = (
+                    f"🎓 SOLICITUD DE CLASE vía bot — ASIGNAR PROFE. "
+                    f"Cliente: {customer_name} (+{customer_phone}). "
+                    f"Precio clase: {class_price_txt}"
+                )
+            else:
+                booking_name = customer_name
+                booking_notes = reward_note
+
             result = await playtomic.create_booking(
                 resource_id=data["resource_id"],
                 start_time=data.get("start_iso", ""),
                 duration=data.get("duration", 90),
-                customer_name=customer_name,
+                customer_name=booking_name,
                 customer_phone=customer_phone,
                 slot_price=price,
-                private_notes=reward_note,
+                private_notes=booking_notes,
             )
 
             _set_state(club_id, to, "idle", {})
@@ -722,16 +768,29 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 except Exception:
                     stamps_line = ""
 
-                confirmation_msg = (
-                    f"✅ *¡Reserva confirmada!*\n\n"
-                    f"📅 {date_label}\n"
-                    f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
-                    f"🎾 {data['court_name']}\n"
-                    f"{price_line}\n\n"
-                    f"{pay_line}\n"
-                    f"{stamps_line}"
-                    f"\n¡Nos vemos en la cancha! 🎾"
-                )
+                if is_class:
+                    class_price_line = (f"💰 *${CLASS_PRICE:.0f} MXN*" if CLASS_PRICE > 0
+                                        else "💰 El club te confirmará el costo")
+                    confirmation_msg = (
+                        f"🎓 *¡Clase reservada!*\n\n"
+                        f"📅 {date_label}\n"
+                        f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
+                        f"{class_price_line}\n\n"
+                        f"El club te asignará un profe y te contactará para confirmar.\n"
+                        f"{stamps_line}"
+                        f"\n¡Nos vemos en la cancha! 🎾"
+                    )
+                else:
+                    confirmation_msg = (
+                        f"✅ *¡Reserva confirmada!*\n\n"
+                        f"📅 {date_label}\n"
+                        f"🕐 {data['start_time']} ({data.get('duration', 90)}min)\n"
+                        f"🎾 {data['court_name']}\n"
+                        f"{price_line}\n\n"
+                        f"{pay_line}\n"
+                        f"{stamps_line}"
+                        f"\n¡Nos vemos en la cancha! 🎾"
+                    )
             else:
                 logger.warning(f"Playtomic booking failed: {result.get('error')}")
                 confirmation_msg = (
@@ -745,8 +804,25 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
 
             await send_text(phone_id, token, to, confirmation_msg)
 
+            # Notify profes/coordinación about new CLASS request
+            if is_class and result.get("success") and CLASS_NOTIFY_PHONE:
+                try:
+                    class_price_txt = f"${CLASS_PRICE:.0f} MXN" if CLASS_PRICE > 0 else "por confirmar"
+                    await send_text(phone_id, token, CLASS_NOTIFY_PHONE,
+                        f"🎓 *Nueva CLASE solicitada — ASIGNAR PROFE*\n\n"
+                        f"👤 {customer_name or 'Sin nombre'}\n"
+                        f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"
+                        f"📅 {date_label} a las {data['start_time']}\n"
+                        f"🎾 {data['court_name']}\n"
+                        f"💰 {class_price_txt}\n\n"
+                        f"La cancha ya quedó apartada en Playtomic (aparece como CLASE). "
+                        f"Asignen profe y contacten al cliente."
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify profes: {e}")
+
             # Notify club owner
-            if CLUB_NOTIFY_PHONE:
+            if CLUB_NOTIFY_PHONE and not (is_class and CLASS_NOTIFY_PHONE == CLUB_NOTIFY_PHONE):
                 display_name = customer_name or "Sin nombre"
                 status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
                 reward_line = f"\n{reward_note}\n" if (reward_note and result.get("success")) else ""
