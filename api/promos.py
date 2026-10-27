@@ -174,7 +174,7 @@ async def create_alert_template(token: str) -> dict:
         "components": [
             {
                 "type": "BODY",
-                "text": "🔔 *Aviso del sistema MatchBot*\n\n{{1}}",
+                "text": "🔔 *Aviso del sistema MatchBot*\n\n{{1}}\n\nRevisa el panel del club para más detalle.",
                 "example": {"body_text": [["Nueva clase solicitada para el jueves 7 pm"]]},
             },
         ],
