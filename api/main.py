@@ -178,12 +178,15 @@ async def _send_health_alert(problems: list[str]):
         logger.error("Health alert: WhatsApp credentials not configured")
         return
     msg = (
-        "⚠️ *MatchBot — Alerta del chequeo diario*\n\n"
+        "⚠️ *MatchBot — Alerta del chequeo automático*\n\n"
         + "\n".join(f"• {p}" for p in problems)
-        + "\n\nEl bot podría no estar creando reservas correctamente. "
+        + "\n\nEl bot podría no estar funcionando bien. "
         "Los clientes verán un mensaje de error si intentan reservar."
     )
-    await send_text(phone_id, token, notify, msg)
+    # send_alert: texto normal, y si la ventana de 24h está cerrada,
+    # usa la plantilla aviso_club (se entrega siempre)
+    from api.promos import send_alert
+    await send_alert(phone_id, token, notify, msg)
 
 
 _health_was_ok = True  # avoid repeated alerts; notify on state change only
@@ -214,7 +217,8 @@ async def _daily_health_loop():
                         token = os.getenv("WHATSAPP_TOKEN", "")
                         notify = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
                         if phone_id and token:
-                            await send_text(phone_id, token, notify,
+                            from api.promos import send_alert as _sa
+                            await _sa(phone_id, token, notify,
                                 "✅ *MatchBot se recuperó* — el sistema de reservas vuelve a funcionar con normalidad.")
                     except Exception as e:
                         logger.error(f"Recovery notice failed: {e}")
