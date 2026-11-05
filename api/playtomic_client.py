@@ -484,6 +484,7 @@ class PlaytomicClient:
                     if r is not None:
                         self._last_avail_debug[f"{sport}_2_relogin"] = r.status_code
 
+            endpoint_closed = False
             for sport, r in results:
                 if r is None:
                     continue
@@ -496,6 +497,15 @@ class PlaytomicClient:
                 else:
                     logger.warning(f"{sport} availability error: {r.status_code} {r.text[:200]}")
                     self._last_avail_debug[f"{sport}_final_error"] = f"{r.status_code}: {r.text[:150]}"
+                    if r.status_code in (403, 404):
+                        endpoint_closed = True
+
+            # Nov 2026: Playtomic cerró /v1/availability en el proxy
+            # (ENDPOINT_NOT_ALLOWED). Calculamos la disponibilidad
+            # localmente: horario del club menos reservas existentes.
+            if endpoint_closed and not all_data:
+                self._last_avail_debug["fallback"] = "local_computation"
+                return await self._compute_availability_locally(date_str)
 
             data = all_data
             logger.info(f"Total availability: {len(data)} items (all sports)")
@@ -579,6 +589,97 @@ class PlaytomicClient:
         if removed:
             logger.info(f"Filtered out {removed} already-booked slots")
         return filtered
+
+    async def calculate_price(self, resource_id: str, start_iso_utc: str,
+                              duration: int = 90, players: int = 4) -> float | None:
+        """Get the real price for a slot via the Manager's own pricing
+        endpoint (POST /v1/matches/calculate_pricing). Returns MXN total."""
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return None
+        try:
+            start = start_iso_utc.rstrip("Z")[:16] + "Z"
+            end_dt = datetime.fromisoformat(start_iso_utc.rstrip("Z")[:19]) + timedelta(minutes=duration)
+            end = end_dt.strftime("%Y-%m-%dT%H:%M") + "Z"
+            r = await self.client.post(
+                f"{MANAGER_API}/v1/matches/calculate_pricing",
+                headers={
+                    "Authorization": f"Bearer {self.tenant_token}",
+                    "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+                    "x-authorization-scope": f"tenant:{TENANT_ID}",
+                },
+                json={
+                    "start_date": start,
+                    "end_date": end,
+                    "resource_id": resource_id,
+                    "tenant_id": TENANT_ID,
+                    "user_id": None,
+                    "number_of_players": players,
+                    "split_payment_parts": None,
+                },
+            )
+            if r.status_code == 200:
+                raw = str(r.json().get("price", ""))
+                m = re.search(r"[\d.]+", raw)
+                if m:
+                    return float(m.group())
+            else:
+                logger.warning(f"calculate_pricing {r.status_code}: {r.text[:120]}")
+        except Exception as e:
+            logger.warning(f"calculate_price failed: {e}")
+        return None
+
+    async def _compute_availability_locally(self, date_str: str) -> list:
+        """Compute availability WITHOUT Playtomic's availability endpoint
+        (closed Nov 2026: ENDPOINT_NOT_ALLOWED). Free slot = club hours
+        minus existing bookings. Prices resolved later via
+        calculate_price when the user picks a time."""
+        await self._ensure_resource_names()
+        matches = await self.list_matches(date_str)
+
+        # Busy intervals per court (UTC)
+        busy: dict[str, list] = {}
+        for m in matches:
+            if "CANCEL" in str(m.get("status", "")).upper():
+                continue
+            rid = m.get("resource_id", "")
+            try:
+                s = datetime.fromisoformat(str(m.get("start_date", ""))[:19])
+                e = datetime.fromisoformat(str(m.get("end_date", ""))[:19])
+            except (ValueError, TypeError):
+                continue
+            busy.setdefault(rid, []).append((s, e))
+
+        OPEN_MIN = 6 * 60 + 30    # 06:30 local
+        CLOSE_MIN = 23 * 60 + 30  # 23:30 local
+        DUR = 90
+        now_utc = datetime.utcnow()
+
+        courts = []
+        for rid, name in self._resource_names.items():
+            slots = []
+            t = OPEN_MIN
+            while t + DUR <= CLOSE_MIN:
+                hh, mm = divmod(t, 60)
+                local_dt = datetime.fromisoformat(f"{date_str}T{hh:02d}:{mm:02d}:00")
+                start_utc = local_dt - timedelta(hours=CLUB_UTC_OFFSET)
+                end_utc = start_utc + timedelta(minutes=DUR)
+                if start_utc > now_utc:
+                    overlap = any(s < end_utc and e > start_utc
+                                  for s, e in busy.get(rid, []))
+                    if not overlap:
+                        slots.append({
+                            "start": start_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "time": f"{hh:02d}:{mm:02d}",
+                            "duration": DUR,
+                            "price": 0.0,  # se cotiza al elegir horario
+                            "resource_id": rid,
+                        })
+                t += 30
+            if slots:
+                courts.append({"resource_id": rid, "name": name, "slots": slots})
+        logger.info(f"Local availability {date_str}: {sum(len(c['slots']) for c in courts)} slots en {len(courts)} canchas")
+        return courts
 
     def _parse_availability(self, data: list, target_local_date: str) -> list:
         """Parse raw Playtomic availability response.

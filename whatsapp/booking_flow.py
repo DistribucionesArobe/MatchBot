@@ -363,10 +363,14 @@ def _build_time_rows(availability: list) -> list:
         n = len(courts)
         min_price = min(c["price"] for c in courts)
         court_label = courts[0]["court"][:50] if n == 1 else f"{n} canchas"
+        if min_price > 0:
+            desc = f"Total: ${min_price:.0f} · {court_label}"
+        else:
+            desc = court_label  # precio se cotiza al elegir horario
         rows.append({
             "id": f"time_{t}",
             "title": f"🕐 {t}",
-            "description": f"Total: ${min_price:.0f} · {court_label}"[:72],
+            "description": desc[:72],
         })
     return rows
 
@@ -503,6 +507,20 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
         if not matching:
             await send_text(phone_id, token, to, "😕 Ese horario ya no está disponible. Intenta otro.")
             return
+
+        # Precios desconocidos (disponibilidad local): cotizar en paralelo
+        # con el endpoint de pricing del Manager
+        if any(c["price"] <= 0 for c in matching) and not data.get("is_class"):
+            import asyncio as _aio
+            async def _price_one(c):
+                p = await playtomic.calculate_price(c["resource_id"], c["start_iso"], c["duration"])
+                if p:
+                    c["price"] = p
+            await _aio.gather(*[_price_one(c) for c in matching if c["price"] <= 0])
+            # Si alguna cotización falló, usa el precio típico como respaldo
+            for c in matching:
+                if c["price"] <= 0:
+                    c["price"] = float(os.getenv("FALLBACK_PRICE", "300"))
 
         if len(matching) == 1 or data.get("is_class"):
             # Clases: el cliente no elige cancha — se toma una libre
@@ -710,6 +728,7 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                     reward_note = f"🎁 PREMIO CLIENTE FRECUENTE: 50% DESCUENTO (5 sellos) — COBRAR ${price/2:.0f}"
 
             if is_class:
+                price = CLASS_PRICE if CLASS_PRICE > 0 else 600.0
                 booking_name = f"CLASE {customer_name}".strip()
                 class_price_txt = f"${CLASS_PRICE:.0f}" if CLASS_PRICE > 0 else "por confirmar"
                 booking_notes = (
