@@ -259,6 +259,48 @@ async def api_find_waba(candidates: str = Query("")):
     return results
 
 
+@app.get("/api/probe-availability")
+async def api_probe_availability(date: str = Query("2026-11-06")):
+    """TEMP: prueba variantes del endpoint de disponibilidad para
+    descubrir el formato nuevo tras ENDPOINT_NOT_ALLOWED."""
+    import httpx as _hx
+    from api.playtomic_client import TENANT_ID as _TID, PLAYTOMIC_API as _API
+    await playtomic.ensure_tenant_auth()
+    tok = playtomic.tenant_token or playtomic.token
+    mgr_headers = {
+        "Authorization": f"Bearer {tok}",
+        "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+        "x-authorization-scope": f"tenant:{_TID}",
+    }
+    plain = {"Authorization": f"Bearer {tok}"}
+    base_params = {
+        "sport_id": "PADEL",
+        "tenant_id": _TID,
+        "local_start_min": f"{date}T00:00:00",
+        "local_start_max": f"{date}T23:59:59",
+    }
+    variants = {
+        "v1 + user_id=me + plain": (f"{_API}/v1/availability", {**base_params, "user_id": "me"}, plain),
+        "v1 + user_id=me + mgr_headers": (f"{_API}/v1/availability", {**base_params, "user_id": "me"}, mgr_headers),
+        "v1 sin user_id + mgr_headers": (f"{_API}/v1/availability", base_params, mgr_headers),
+        "v1 sin user_id + plain": (f"{_API}/v1/availability", base_params, plain),
+        "v2 + mgr_headers": (f"{_API}/v2/availability", {**base_params, "user_id": "me"}, mgr_headers),
+    }
+    out = {}
+    for label, (url, params, headers) in variants.items():
+        try:
+            r = await playtomic.client.get(url, params=params, headers=headers)
+            if r.status_code == 200:
+                data = r.json()
+                n = len(data) if isinstance(data, list) else "?"
+                out[label] = f"200 OK — {n} items"
+            else:
+                out[label] = f"{r.status_code}: {r.text[:100]}"
+        except Exception as e:
+            out[label] = f"err: {str(e)[:80]}"
+    return out
+
+
 @app.get("/api/create-promo-template")
 async def api_create_promo_template(waba_id: str = Query(None)):
     """Crea la plantilla de promos 'promo_club' via API de Meta."""
