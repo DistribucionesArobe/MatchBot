@@ -308,11 +308,25 @@ class PlaytomicClient:
         if not self.token:
             await self.login()
 
+    def _token_expiring(self, token: str, margin_s: int = 120) -> bool:
+        """True if the JWT expires within margin_s seconds (or is invalid)."""
+        try:
+            claims = self._decode_token_claims(token)
+            exp = int(claims.get("exp", 0))
+            return exp <= int(time.time()) + margin_s
+        except Exception:
+            return True
+
     async def ensure_tenant_auth(self):
-        """Ensure we have a valid tenant-scoped token for bookings."""
-        if not self.token:
+        """Ensure we have a valid, NON-EXPIRING tenant token for bookings.
+        Renews proactively so the first booking attempt never hits a
+        stale-token 403."""
+        if not self.token or self._token_expiring(self.token):
+            self.token = None
+            self.tenant_token = None
             await self.login()
-        if not self.tenant_token:
+        if not self.tenant_token or self._token_expiring(self.tenant_token):
+            self.tenant_token = None
             await self.get_tenant_token()
 
     # ─── RESOURCE NAMES (court names from tenant info) ───
@@ -1069,6 +1083,8 @@ class PlaytomicClient:
             else:
                 logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
                 self._last_booking_debug["result"] = "FAILED both attempts"
+                if "ALREADY_LOCKED" in r.text or r.status_code == 409:
+                    return {"error": "slot_locked"}
                 return {"error": f"Error al crear reserva: {r.status_code} - {r.text[:200]}"}
 
         except Exception as e:

@@ -810,6 +810,15 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                         f"{stamps_line}"
                         f"\n¡Nos vemos en la cancha! 🎾"
                     )
+            elif result.get("error") == "slot_locked":
+                logger.warning("Playtomic booking: slot locked by someone else")
+                confirmation_msg = (
+                    f"😕 *Ese horario se acaba de ocupar.*\n\n"
+                    f"Alguien más apartó la cancha de las {data['start_time']} "
+                    f"hace un momento.\n\n"
+                    f"Escribe *Reservar* para elegir otro horario — "
+                    f"la disponibilidad ya está actualizada."
+                )
             else:
                 logger.warning(f"Playtomic booking failed: {result.get('error')}")
                 confirmation_msg = (
