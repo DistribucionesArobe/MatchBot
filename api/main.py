@@ -229,6 +229,29 @@ async def _daily_health_loop():
         await asyncio.sleep(4 * 3600)  # every 4 hours
 
 
+@app.get("/api/voice/disponibilidad")
+async def api_voice_disponibilidad(request: Request, date: str = Query("hoy")):
+    """Herramienta del agente de voz: horarios libres."""
+    from api import voice
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida o no configurada")
+    return await voice.disponibilidad(playtomic, date)
+
+
+@app.post("/api/voice/reservar")
+async def api_voice_reservar(request: Request):
+    """Herramienta del agente de voz: crear reserva."""
+    from api import voice
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida o no configurada")
+    body = await request.json()
+    return await voice.reservar(
+        playtomic,
+        body.get("date", ""), body.get("time", ""),
+        body.get("nombre", ""), body.get("telefono", ""),
+    )
+
+
 @app.get("/api/find-waba")
 async def api_find_waba(candidates: str = Query("")):
     """Busca en que WABA vive el numero del bot (PHONE_NUMBER_ID_PADEL)."""
