@@ -252,6 +252,90 @@ async def api_voice_reservar(request: Request):
     )
 
 
+@app.get("/api/voice/calling-settings")
+async def api_voice_calling_settings(request: Request, creds: int = Query(0)):
+    """Ver la config de llamadas (Calling API) del numero del bot."""
+    from api import voice
+    import httpx as _hx
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida o no configurada")
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+    url = f"https://graph.facebook.com/v25.0/{phone_id}/settings"
+    if creds:
+        url += "?include_sip_credentials=true"
+    async with _hx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": r.text}
+    return {"status_code": r.status_code, "settings": data}
+
+
+@app.post("/api/voice/enable-whatsapp-calling")
+async def api_voice_enable_whatsapp_calling(request: Request):
+    """Activa llamadas de WhatsApp en el numero del bot y las enruta por SIP
+    al asistente de voz de Telnyx. NO afecta los mensajes del bot.
+    Revertible con /api/voice/disable-whatsapp-calling."""
+    from api import voice
+    import httpx as _hx
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida o no configurada")
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+    sip_host = os.getenv(
+        "VOICE_SIP_HOSTNAME",
+        "assistant-d7187978-e40f-45ed-a59e-2a80de3d9e43.sip.telnyx.com")
+    sip_port = int(os.getenv("VOICE_SIP_PORT", "5061"))
+    payload = {
+        "calling": {
+            "status": "ENABLED",
+            "call_icon_visibility": "DEFAULT",
+            "sip": {
+                "status": "ENABLED",
+                "servers": [{"hostname": sip_host, "port": sip_port}],
+            },
+        }
+    }
+    async with _hx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            f"https://graph.facebook.com/v25.0/{phone_id}/settings",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+            json=payload)
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": r.text}
+    return {"status_code": r.status_code, "result": data,
+            "sip_host": sip_host, "sip_port": sip_port}
+
+
+@app.post("/api/voice/disable-whatsapp-calling")
+async def api_voice_disable_whatsapp_calling(request: Request):
+    """Desactiva las llamadas de WhatsApp del numero del bot (reversa total)."""
+    from api import voice
+    import httpx as _hx
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida o no configurada")
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+    payload = {"calling": {"status": "DISABLED",
+                           "sip": {"status": "DISABLED", "servers": []}}}
+    async with _hx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            f"https://graph.facebook.com/v25.0/{phone_id}/settings",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+            json=payload)
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": r.text}
+    return {"status_code": r.status_code, "result": data}
+
+
 @app.get("/api/find-waba")
 async def api_find_waba(candidates: str = Query("")):
     """Busca en que WABA vive el numero del bot (PHONE_NUMBER_ID_PADEL)."""
@@ -874,7 +958,7 @@ async def api_playtomic_debug(date: str = Query(None)):
 
     tenant_id = os.getenv("PLAYTOMIC_TENANT_ID", "")
     api = "https://manager.playtomic.io/api"
-    results = {"code_version": "v24-loyalty", "date": date, "tenant_id": tenant_id}
+    results = {"code_version": "v25-wa-calling", "date": date, "tenant_id": tenant_id}
 
     # Show bot auth status
     results["bot_logged_in"] = playtomic.token is not None
