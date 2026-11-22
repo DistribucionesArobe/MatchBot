@@ -196,6 +196,14 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
                     "Escríbelo así: *soy Juan Pérez* (solo tu nombre, sin números)")
             return
 
+        if text_lower in ("saldo", "mi saldo", "monedero", "mi monedero"):
+            try:
+                from api import wallet
+                await send_text(phone_id, token, wa_phone, wallet.saldo_message(wa_phone))
+            except Exception as e:
+                logger.error(f"wallet saldo failed: {e}")
+            return
+
         if text_lower.startswith("cumple"):
             bd = customers.parse_birthday(text_lower.replace("cumpleaños", "", 1).replace("cumple", "", 1))
             if bd:
@@ -814,6 +822,19 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 else:
                     reward_note = f"🎁 PREMIO CLIENTE FRECUENTE: 50% DESCUENTO (5 sellos) — COBRAR ${price/2:.0f}"
 
+            # ── Monedero: ¿el saldo alcanza para pagar en automático? ──
+            due = price
+            if is_class:
+                due = CLASS_PRICE if CLASS_PRICE > 0 else 600.0
+            elif reward:
+                due = 0.0 if reward["reward_type"] == "free" else price / 2
+            wallet_will_pay = False
+            try:
+                from api import wallet
+                wallet_will_pay = due > 0 and wallet.balance(to) + 0.01 >= due
+            except Exception as e:
+                logger.error(f"wallet check failed: {e}")
+
             if is_class:
                 price = CLASS_PRICE if CLASS_PRICE > 0 else 600.0
                 booking_name = f"CLASE {customer_name}".strip()
@@ -826,6 +847,10 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             else:
                 booking_name = customer_name
                 booking_notes = reward_note
+
+            if wallet_will_pay:
+                wnote = f"💰 PAGADO CON MONEDERO DEL BOT — NO COBRAR (${due:.0f})"
+                booking_notes = f"{booking_notes} | {wnote}" if booking_notes else wnote
 
             result = await playtomic.create_booking(
                 resource_id=data["resource_id"],
@@ -857,6 +882,16 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 except Exception as e:
                     logger.error(f"loyalty tracking failed: {e}")
 
+                # Cobro automático con monedero
+                wallet_remaining = None
+                if wallet_will_pay:
+                    try:
+                        from api import wallet
+                        wallet_remaining = wallet.debit(to, due, match_id)
+                    except Exception as e:
+                        logger.error(f"wallet debit failed: {e}")
+                        wallet_will_pay = False
+
                 # Precio a mostrar según premio
                 if reward and reward["reward_type"] == "free":
                     price_line = f"💰 ~${price:.0f}~ *GRATIS* 🎁 (premio 10 sellos)"
@@ -868,6 +903,11 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                     price_line = f"💰 ${price:.0f} MXN"
                     pay_line = "💵 Paga al llegar al club."
 
+                if wallet_will_pay and wallet_remaining is not None:
+                    price_line += " — *PAGADA* ✅"
+                    pay_line = (f"💰 Se pagó con tu *monedero del club* "
+                                f"(te quedan ${wallet_remaining:.0f} de saldo).")
+
                 try:
                     stamps_now = loyalty.get_card(to)["in_cycle"]
                     stamps_line = f"\n🎟️ Sellos: {stamps_now}/10 — se suma 1 al jugar. Escribe *sellos* para ver tu tarjeta."
@@ -877,6 +917,9 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 if is_class:
                     class_price_line = (f"💰 *${CLASS_PRICE:.0f} MXN*" if CLASS_PRICE > 0
                                         else "💰 El club te confirmará el costo")
+                    if wallet_will_pay and wallet_remaining is not None:
+                        class_price_line += (f" — *PAGADA* ✅ con tu monedero "
+                                             f"(saldo: ${wallet_remaining:.0f})")
                     confirmation_msg = (
                         f"🎓 *¡Clase reservada!*\n\n"
                         f"📅 {date_label}\n"
@@ -955,6 +998,8 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 display_name = customer_name or "Sin nombre"
                 status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
                 reward_line = f"\n{reward_note}\n" if (reward_note and result.get("success")) else ""
+                if wallet_will_pay and result.get("success"):
+                    reward_line += "\n💰 PAGADA CON MONEDERO — NO COBRAR\n"
                 try:
                     await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
                         f"🔔 *Nueva reserva por WhatsApp*\n\n"

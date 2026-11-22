@@ -78,6 +78,9 @@ async def startup():
         from api import customers
         customers.ensure_table()
         logger.info("📇 Customers table ready")
+        from api import wallet
+        wallet.ensure_tables()
+        logger.info("💰 Wallet tables ready")
     except Exception as e:
         logger.warning(f"Loyalty tables init failed: {e}")
     asyncio.create_task(_loyalty_loop())
@@ -301,6 +304,58 @@ async def api_voice_reservar(request: Request):
         body.get("date", ""), body.get("time", ""),
         body.get("nombre", ""), body.get("telefono", ""),
     )
+
+
+@app.post("/api/wallet/recarga")
+async def api_wallet_recarga(request: Request):
+    """Registrar recarga de monedero desde /panel (form). Requiere clave staff."""
+    from fastapi.responses import HTMLResponse
+    from api import wallet, customers
+    form = await request.form()
+    key = (form.get("key") or "").strip()
+    staff_key = os.getenv("STAFF_KEY", "") or os.getenv("VOICE_API_KEY", "")
+    if not staff_key or key != staff_key:
+        return HTMLResponse(
+            "<h3>❌ Clave de staff incorrecta.</h3><a href='/panel'>← Volver al panel</a>",
+            status_code=403)
+    phone = (form.get("phone") or "").strip()
+    try:
+        paid = float(form.get("paid") or 0)
+        credited = float(form.get("credit") or 0)
+    except ValueError:
+        paid, credited = 0.0, 0.0
+    p10 = wallet._phone10(phone)
+    if len(p10) != 10 or credited <= 0:
+        return HTMLResponse(
+            "<h3>❌ Revisa el teléfono (10 dígitos) y el monto a abonar.</h3>"
+            "<a href='/panel'>← Volver al panel</a>", status_code=400)
+
+    new_balance = wallet.credit(p10, credited, paid,
+                                concept=f"Recarga (pagó ${paid:.0f})",
+                                created_by="panel")
+
+    # Avisar al cliente por WhatsApp
+    try:
+        from api.promos import send_alert
+        phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+        token = os.getenv("WHATSAPP_TOKEN", "")
+        nombre = customers.registered_name(p10)
+        saludo = f"¡Hola{', ' + nombre.split()[0] if nombre else ''}!"
+        if phone_id and token:
+            await send_alert(phone_id, token, "52" + p10,
+                f"💰 {saludo} Tu monedero del club fue recargado.\n\n"
+                f"➕ Abono: ${credited:.0f} MXN\n"
+                f"💵 Saldo actual: *${new_balance:.0f} MXN*\n\n"
+                f"Tus próximas reservas se pagan automáticamente con tu saldo. "
+                f"Escribe *saldo* para consultarlo. 🎾")
+    except Exception as e:
+        logger.error(f"wallet recarga notify failed: {e}")
+
+    return HTMLResponse(
+        f"<h3>✅ Recarga registrada: +${credited:.0f} a +52 {p10}.</h3>"
+        f"<p>Saldo actual: <b>${new_balance:.0f} MXN</b>. "
+        f"El cliente ya recibió aviso por WhatsApp.</p>"
+        f"<a href='/panel'>← Volver al panel</a>")
 
 
 @app.get("/api/voice/calling-settings")

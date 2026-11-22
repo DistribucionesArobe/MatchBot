@@ -148,6 +148,19 @@ async def reservar(playtomic, raw_date: str, time_str: str,
             display_name = reg
     except Exception as e:
         logger.error(f"voice customers lookup failed: {e}")
+
+    # Monedero: ¿el saldo alcanza para pagar en automático?
+    wallet_will_pay = False
+    try:
+        from api import wallet
+        wallet_will_pay = price > 0 and wallet.balance(telefono) + 0.01 >= price
+    except Exception as e:
+        logger.error(f"voice wallet check failed: {e}")
+
+    notes = "📞 Reserva por LLAMADA (agente de voz)"
+    if wallet_will_pay:
+        notes += f" | 💰 PAGADO CON MONEDERO DEL BOT — NO COBRAR (${price:.0f})"
+
     result = await playtomic.create_booking(
         resource_id=chosen["resource_id"],
         start_time=chosen["start"],
@@ -155,7 +168,7 @@ async def reservar(playtomic, raw_date: str, time_str: str,
         customer_name=display_name,
         customer_phone=telefono,
         slot_price=price,
-        private_notes="📞 Reserva por LLAMADA (agente de voz)",
+        private_notes=notes,
     )
 
     if not result.get("success"):
@@ -192,6 +205,17 @@ async def reservar(playtomic, raw_date: str, time_str: str,
     except Exception as e:
         logger.error(f"voice notify failed: {e}")
 
+    # Cobro automático con monedero
+    pago_frase = "se paga al llegar al club"
+    if wallet_will_pay:
+        try:
+            from api import wallet
+            remaining = wallet.debit(telefono, price, result.get("match_id", ""))
+            pago_frase = (f"ya quedó pagada con tu monedero del club, "
+                          f"te quedan {remaining:.0f} pesos de saldo")
+        except Exception as e:
+            logger.error(f"voice wallet debit failed: {e}")
+
     d = datetime.fromisoformat(date_str).date()
     return {
         "ok": True,
@@ -199,5 +223,5 @@ async def reservar(playtomic, raw_date: str, time_str: str,
         "precio": price,
         "mensaje": (f"Listo, reserva confirmada: {DAYS_ES[d.weekday()]} {d.day} "
                     f"a las {_fmt_time_12h(time_str)} en la {chosen['court']}, "
-                    f"total {price:.0f} pesos, se paga al llegar al club."),
+                    f"total {price:.0f} pesos, {pago_frase}."),
     }

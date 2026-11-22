@@ -257,9 +257,71 @@ def premios_html() -> str:
             '<th>Ganado</th><th>Estado</th></tr>' + body + '</table>')
 
 
+def monederos_html() -> str:
+    """Sección Monederos dentro de Pagos: recargas + saldos."""
+    try:
+        from api import wallet
+        packs = wallet.packages()
+        balances = wallet.all_balances()
+        txs = wallet.recent_tx(15)
+    except Exception as e:
+        logger.error(f"panel monederos: {e}")
+        packs, balances, txs = [], [], []
+
+    pack_btns = "".join(
+        f'<button type="button" class="packbtn" '
+        f'onclick="document.getElementById(\'w_paid\').value={p["paga"]:.0f};'
+        f'document.getElementById(\'w_credit\').value={p["recibe"]:.0f}">'
+        f'Paga ${p["paga"]:.0f} → recibe ${p["recibe"]:.0f}</button> '
+        for p in packs)
+
+    form = (
+        '<div class="walletform"><h3>💰 Registrar recarga de monedero</h3>'
+        '<form method="post" action="/api/wallet/recarga">'
+        '<label>Teléfono del cliente (10 dígitos)<br>'
+        '<input name="phone" required pattern="[0-9 +]{10,15}" placeholder="8341234567"></label> '
+        f'<div style="margin:8px 0">{pack_btns}</div>'
+        '<label>Pagó $<input id="w_paid" name="paid" type="number" step="1" required></label> '
+        '<label>Abonar $<input id="w_credit" name="credit" type="number" step="1" required></label> '
+        '<label>Clave staff<input name="key" type="password" required></label> '
+        '<button type="submit" class="savebtn">Abonar saldo</button>'
+        '</form><p class="hint">Al abonar, el cliente recibe aviso por WhatsApp y sus '
+        'reservas se pagan solas con su saldo.</p></div>'
+    )
+
+    if balances:
+        rows = "".join(
+            f'<tr><td>+52 {_esc(b["phone10"])}</td>'
+            f'<td><b>${float(b["saldo"]):.0f}</b></td>'
+            f'<td>{b["ultima"].strftime("%d/%m/%Y") if b["ultima"] else "—"}</td></tr>'
+            for b in balances)
+        saldos = ('<h3>Saldos actuales</h3><table class="tbl">'
+                  '<tr><th>Cliente</th><th>Saldo</th><th>Último mov.</th></tr>'
+                  + rows + '</table>')
+    else:
+        saldos = '<div class="empty">Aún no hay monederos con saldo.</div>'
+
+    if txs:
+        rows = "".join(
+            f'<tr><td>{t["created_at"].strftime("%d/%m %H:%M") if t["created_at"] else ""}</td>'
+            f'<td>+52 {_esc(t["phone10"])}</td>'
+            f'<td style="color:{"#0a7d3b" if float(t["amount"])>0 else "#b02a2a"}">'
+            f'{"+" if float(t["amount"])>0 else ""}{float(t["amount"]):.0f}</td>'
+            f'<td>{_esc(t.get("concept") or "")}</td></tr>'
+            for t in txs)
+        movs = ('<h3>Últimos movimientos</h3><table class="tbl">'
+                '<tr><th>Fecha</th><th>Cliente</th><th>Monto</th><th>Concepto</th></tr>'
+                + rows + '</table>')
+    else:
+        movs = ''
+
+    return form + saldos + movs
+
+
 def pagos_html(upcoming: list[dict]) -> str:
+    wallet_block = monederos_html()
     if not upcoming:
-        return '<div class="empty">No hay reservas próximas.</div>'
+        return wallet_block + '<div class="empty">No hay reservas próximas.</div>'
     body = ""
     for b in upcoming:
         estado = ('<span class="pill paid">Pagado</span>' if b["paid"]
@@ -269,8 +331,10 @@ def pagos_html(upcoming: list[dict]) -> str:
             f'<td>{_esc(b["court"])}</td><td>{_esc(b["players"][:35])}</td>'
             f'<td><b>{b["price"]}</b></td><td>{estado}</td></tr>'
         )
-    return ('<table class="tbl"><tr><th>Cuándo</th><th>Cancha</th>'
-            '<th>Cliente</th><th>Precio</th><th>Pago</th></tr>' + body + '</table>')
+    return wallet_block + (
+        '<h3>Reservas próximas</h3>'
+        '<table class="tbl"><tr><th>Cuándo</th><th>Cancha</th>'
+        '<th>Cliente</th><th>Precio</th><th>Pago</th></tr>' + body + '</table>')
 
 
 def reservas_html(upcoming: list[dict]) -> str:
@@ -391,6 +455,13 @@ section.visible { display:block; }
 .card .num { font-size:1.7rem; font-weight:800; color:#10b981; }
 .card .lbl { font-size:0.7rem; color:#6b7280; margin-top:0.2rem; }
 .empty { background:white; border:1px solid #e5e7eb; border-radius:12px; padding:2rem; text-align:center; color:#6b7280; font-size:0.85rem; }
+.walletform { background:white; border:1px solid #e5e7eb; border-radius:12px; padding:1.2rem; margin-bottom:1rem; }
+.walletform h3, #pagos h3 { margin:0.4rem 0 0.8rem; font-size:0.95rem; }
+.walletform label { font-size:0.8rem; color:#374151; margin-right:0.8rem; }
+.walletform input { border:1px solid #d1d5db; border-radius:8px; padding:6px 8px; margin:2px 6px 8px 0; width:130px; }
+.packbtn { background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3; border-radius:8px; padding:5px 10px; font-size:0.78rem; cursor:pointer; margin-bottom:4px; }
+.savebtn { background:#111827; color:white; border:none; border-radius:8px; padding:8px 16px; cursor:pointer; }
+.hint { color:#6b7280; font-size:0.75rem; margin:0.5rem 0 0; }
 .hint { font-size:0.75rem; color:#6b7280; margin-top:0.75rem; }
 .hint a { color:#059669; }
 </style></head><body>

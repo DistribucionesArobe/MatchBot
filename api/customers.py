@@ -125,12 +125,20 @@ def datos_message(phone: str) -> str:
     if not c or not c.get("name"):
         return ("📇 Aún no estás registrado. Al hacer tu próxima reserva "
                 "te preguntaré tu nombre para registrarte. 🎾")
+    saldo_line = ""
+    try:
+        from api import wallet
+        bal = wallet.balance(phone)
+        saldo_line = f"💰 Saldo en monedero: ${bal:.0f} MXN"
+    except Exception:
+        pass
     lines = [
         "📇 *Tus datos de cliente*",
         "",
         f"👤 Nombre: {c['name']}",
         f"🎂 Cumpleaños: {c.get('birthday') or 'sin registrar'}",
         f"🎾 Reservas con el bot: {c.get('bookings_count') or 0}",
+        saldo_line,
         "",
         "Para corregir tu nombre escribe: *soy Tu Nombre*",
         "Para tu cumpleaños escribe: *cumple 15/05*",
