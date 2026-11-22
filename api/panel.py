@@ -360,34 +360,133 @@ def reservas_html(upcoming: list[dict]) -> str:
     return '<table class="tbl">' + body + '</table>'
 
 
-def reportes_html() -> str:
+def _price_num(price_str: str) -> float:
+    try:
+        d = "".join(ch for ch in str(price_str) if ch.isdigit() or ch == ".")
+        return float(d) if d else 0.0
+    except ValueError:
+        return 0.0
+
+
+def reportes_html(all_rows: list = None, courts: list = None) -> str:
+    """Reportes estilo Playtomic: ingresos, ocupación, clientes y monedero."""
+    all_rows = all_rows or []
+    courts = courts or []
+    now_l = _local(datetime.utcnow())
+
     def _q(sql):
         try:
             return execute(sql, fetch_one=True) or {}
         except Exception:
             return {}
-    usuarios = _q("SELECT COUNT(DISTINCT wa_phone) AS n FROM wa_booking_state").get("n", 0)
-    activos7 = _q("SELECT COUNT(DISTINCT wa_phone) AS n FROM wa_booking_state WHERE updated_at >= NOW() - INTERVAL '7 days'").get("n", 0)
-    res_total = _q("SELECT COUNT(*) AS n FROM loyalty_bookings").get("n", 0)
-    res_7d = _q("SELECT COUNT(*) AS n FROM loyalty_bookings WHERE created_at >= NOW() - INTERVAL '7 days'").get("n", 0)
-    jugadas = _q("SELECT COUNT(*) AS n FROM loyalty_bookings WHERE status='stamped'").get("n", 0)
-    cancel = _q("SELECT COUNT(*) AS n FROM loyalty_bookings WHERE status='cancelled'").get("n", 0)
-    premios = _q("SELECT COUNT(*) AS n FROM loyalty_rewards").get("n", 0)
 
-    cards = [
-        (usuarios, "Clientes que han usado el bot"),
-        (activos7, "Activos últimos 7 días"),
-        (res_total, "Reservas por el bot (total)"),
-        (res_7d, "Reservas últimos 7 días"),
+    # ── Este mes (según reservas visibles de Playtomic) ──
+    mes = [r for r in all_rows
+           if r["start_l"].year == now_l.year and r["start_l"].month == now_l.month
+           and "CANCEL" not in r["status"] and r.get("kind") != "cerrado"]
+    ingresos = sum(_price_num(r["price"]) for r in mes)
+    del_bot = sum(1 for r in mes if r["bot"])
+    pct_bot = f"{del_bot * 100 // len(mes)}%" if mes else "—"
+
+    # Ocupación del mes transcurrido: minutos reservados / disponibles
+    ocupacion = "—"
+    try:
+        from api import settings as st
+        from datetime import date as _date, timedelta as _tdd
+        dias, disponibles = 0, 0
+        d = _date(now_l.year, now_l.month, 1)
+        while d <= now_l.date():
+            o, c = st.club_hours(d.weekday())
+            disponibles += max(0, c - o) * max(len(courts), 1)
+            d += _tdd(days=1)
+            dias += 1
+        reservados = sum(r["dur"] for r in mes if r["start_l"].date() <= now_l.date())
+        if disponibles:
+            ocupacion = f"{reservados * 100 // disponibles}%"
+    except Exception as e:
+        logger.error(f"reporte ocupacion: {e}")
+
+    MES_N = MONTHS[now_l.month]
+    cards1 = [
+        (len(mes), f"Reservas en {MES_N}"),
+        (f"${ingresos:,.0f}", f"Ingresos estimados {MES_N}"),
+        (pct_bot, "Hechas por el bot 🤖"),
+        (ocupacion, "Ocupación del mes"),
+    ]
+
+    # ── Clientes y lealtad ──
+    nuevos_mes = _q("SELECT COUNT(*) AS n FROM customers WHERE created_at >= date_trunc('month', NOW())").get("n", 0)
+    registrados = _q("SELECT COUNT(*) AS n FROM customers WHERE name IS NOT NULL").get("n", 0)
+    jugadas = _q("SELECT COUNT(*) AS n FROM loyalty_bookings WHERE status='stamped'").get("n", 0)
+    premios = _q("SELECT COUNT(*) AS n FROM loyalty_rewards").get("n", 0)
+    cards2 = [
+        (registrados, "Clientes registrados"),
+        (nuevos_mes, f"Nuevos en {MES_N}"),
         (jugadas, "Partidos jugados (sellos)"),
-        (cancel, "Cancelaciones"),
         (premios, "Premios ganados"),
     ]
-    html = '<div class="cards">'
-    for num, lbl in cards:
-        html += f'<div class="card"><div class="num">{num}</div><div class="lbl">{lbl}</div></div>'
-    html += '</div><p class="hint">Para ver el detalle del uso del bot (gráficas por día): <a href="/stats">/stats</a></p>'
-    return html
+
+    # ── Monedero ──
+    saldo_total = _q("SELECT COALESCE(SUM(amount),0) AS s FROM wallet_tx").get("s", 0)
+    recargado = _q("SELECT COALESCE(SUM(amount),0) AS s FROM wallet_tx WHERE amount > 0 AND created_at >= date_trunc('month', NOW())").get("s", 0)
+    pagado = _q("SELECT COALESCE(-SUM(amount),0) AS s FROM wallet_tx WHERE amount < 0 AND created_at >= date_trunc('month', NOW())").get("s", 0)
+    cards3 = [
+        (f"${float(saldo_total):,.0f}", "Saldo vivo en monederos"),
+        (f"${float(recargado):,.0f}", f"Recargado en {MES_N}"),
+        (f"${float(pagado):,.0f}", f"Pagado con monedero en {MES_N}"),
+    ]
+
+    def _cards(items):
+        h = '<div class="cards">'
+        for num, lbl in items:
+            h += f'<div class="card"><div class="num">{num}</div><div class="lbl">{lbl}</div></div>'
+        return h + '</div>'
+
+    # ── Por cancha este mes ──
+    por_cancha = {}
+    for r in mes:
+        pc = por_cancha.setdefault(r["court"], {"n": 0, "ing": 0.0})
+        pc["n"] += 1
+        pc["ing"] += _price_num(r["price"])
+    tabla_canchas = ""
+    if por_cancha:
+        filas = "".join(
+            f'<tr><td>{_esc(c)}</td><td>{v["n"]}</td><td>${v["ing"]:,.0f}</td></tr>'
+            for c, v in sorted(por_cancha.items(), key=lambda kv: -kv[1]["n"]))
+        tabla_canchas = (f'<h3>Por cancha en {MES_N}</h3>'
+                         '<table class="tbl"><tr><th>Cancha</th><th>Reservas</th>'
+                         '<th>Ingresos est.</th></tr>' + filas + '</table>')
+
+    # ── Top clientes del mes ──
+    tabla_top = ""
+    try:
+        tops = execute("""
+            SELECT c.name, c.phone10, COUNT(lb.id) AS n
+            FROM loyalty_bookings lb
+            JOIN customers c ON c.phone10 = RIGHT(lb.wa_phone, 10)
+            WHERE lb.created_at >= date_trunc('month', NOW())
+              AND lb.status <> 'cancelled'
+            GROUP BY c.name, c.phone10 ORDER BY n DESC LIMIT 8
+        """, fetch_all=True) or []
+        if tops:
+            filas = "".join(
+                f'<tr><td><b>{_esc(t["name"] or "Sin nombre")}</b></td>'
+                f'<td>+52 {_esc(t["phone10"])}</td><td>{t["n"]}</td></tr>'
+                for t in tops)
+            tabla_top = (f'<h3>Top clientes de {MES_N} (vía bot)</h3>'
+                         '<table class="tbl"><tr><th>Cliente</th><th>Teléfono</th>'
+                         '<th>Reservas</th></tr>' + filas + '</table>')
+    except Exception as e:
+        logger.error(f"reporte top clientes: {e}")
+
+    return (
+        f'<h3>💵 Negocio en {MES_N}</h3>' + _cards(cards1)
+        + '<h3>👥 Clientes</h3>' + _cards(cards2)
+        + '<h3>💰 Monedero</h3>' + _cards(cards3)
+        + tabla_canchas + tabla_top
+        + '<p class="hint">Ingresos estimados según los precios registrados en las reservas '
+          'visibles de Playtomic. Detalle del uso del bot: <a href="/stats">/stats</a></p>'
+    )
 
 
 # ─────────────────────────────────────────────────────
@@ -459,7 +558,7 @@ section.visible { display:block; }
 .card .lbl { font-size:0.7rem; color:#6b7280; margin-top:0.2rem; }
 .empty { background:white; border:1px solid #e5e7eb; border-radius:12px; padding:2rem; text-align:center; color:#6b7280; font-size:0.85rem; }
 .walletform { background:white; border:1px solid #e5e7eb; border-radius:12px; padding:1.2rem; margin-bottom:1rem; }
-.walletform h3, #pagos h3 { margin:0.4rem 0 0.8rem; font-size:0.95rem; }
+.walletform h3, #pagos h3, #reportes h3, #clientes h3, #usuarios h3 { margin:0.9rem 0 0.8rem; font-size:0.95rem; }
 .walletform label { font-size:0.8rem; color:#374151; margin-right:0.8rem; }
 .walletform input { border:1px solid #d1d5db; border-radius:8px; padding:6px 8px; margin:2px 6px 8px 0; width:130px; }
 .packbtn { background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3; border-radius:8px; padding:5px 10px; font-size:0.78rem; cursor:pointer; margin-bottom:4px; }
@@ -816,6 +915,6 @@ async def render_panel(playtomic, date_str: str = None, user: dict = None) -> st
         .replace("%CLIENTES%", clientes_html())
         .replace("%PREMIOS%", premios_html())
         .replace("%PAGOS%", pagos_html(upcoming))
-        .replace("%REPORTES%", reportes_html())
+        .replace("%REPORTES%", reportes_html(all_rows, courts))
     )
     return html
