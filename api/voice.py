@@ -169,6 +169,7 @@ async def reservar(playtomic, raw_date: str, time_str: str,
         customer_phone=telefono,
         slot_price=price,
         private_notes=notes,
+        source="llamada",
     )
 
     if not result.get("success"):

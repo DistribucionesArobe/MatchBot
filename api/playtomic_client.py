@@ -878,6 +878,20 @@ class PlaytomicClient:
         return "\n".join(lines)
 
     # ─── BOOKING (requires tenant-scoped auth) ───
+    def _mirror_record(self, match_id, resource_id, start_time, duration,
+                       name, phone, price, payment_mode, source, notes):
+        """Copia inmediata al espejo local (vida en ambos sistemas)."""
+        try:
+            from api import mirror
+            court = self._resource_names.get(resource_id, resource_id)
+            sport = self._resource_sports.get(resource_id, "PADEL")
+            mirror.record(match_id, court, sport, start_time, duration,
+                          name, phone, price,
+                          "SINGLE_PAYER" if payment_mode == "single" else "SPLIT",
+                          source, notes or "")
+        except Exception as e:
+            logger.error(f"mirror hook failed: {e}")
+
     async def create_booking(
         self,
         resource_id: str,
@@ -889,6 +903,7 @@ class PlaytomicClient:
         private_notes: str = None,
         players: int = None,
         payment_mode: str = "split",
+        source: str = "bot",
     ) -> dict:
         """
         Create a booking on Playtomic as the club manager.
@@ -1055,6 +1070,9 @@ class PlaytomicClient:
                 match_id = match_data.get("match_id", match_data.get("matchId", ""))
                 logger.info(f"Booking OK via Manager — match_id: {match_id}")
                 self._last_booking_debug["result"] = f"OK match_id={match_id}"
+                self._mirror_record(match_id, resource_id, start_time, duration,
+                                    customer_name, customer_phone, slot_price,
+                                    payment_mode, source, private_notes)
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.warning(f"Manager proxy create failed ({r.status_code}), falling back to public API")
@@ -1103,6 +1121,9 @@ class PlaytomicClient:
                 match_id = match_data.get("match_id", "")
                 logger.info(f"Booking OK via SINGLE_PAYER fallback — match_id: {match_id}")
                 self._last_booking_debug["result"] = f"OK (fallback) match_id={match_id}"
+                self._mirror_record(match_id, resource_id, start_time, duration,
+                                    customer_name, customer_phone, slot_price,
+                                    payment_mode, source, private_notes)
                 return {"success": True, "booking": match_data, "match_id": match_id}
             else:
                 logger.error(f"Booking failed: {r.status_code} {r.text[:300]}")
@@ -1622,6 +1643,11 @@ class PlaytomicClient:
             logger.info(f"Cancel match {match_id}: {r.status_code} {r.text[:300]}")
 
             if r.status_code in (200, 204):
+                try:
+                    from api import mirror
+                    mirror.mark_cancelled(match_id)
+                except Exception:
+                    pass
                 return {"success": True, "match_id": match_id}
 
             # If DELETE doesn't work, try PATCH with cancellation
@@ -1633,6 +1659,11 @@ class PlaytomicClient:
             logger.info(f"Cancel (PATCH) match {match_id}: {r2.status_code} {r2.text[:300]}")
 
             if r2.status_code in (200, 204):
+                try:
+                    from api import mirror
+                    mirror.mark_cancelled(match_id)
+                except Exception:
+                    pass
                 return {"success": True, "match_id": match_id}
 
             return {"error": f"Cancel failed: DELETE={r.status_code}, PATCH={r2.status_code}"}

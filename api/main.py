@@ -88,10 +88,14 @@ async def startup():
         from api import settings as app_settings
         app_settings.ensure_table()
         logger.info("⚙️ Settings table ready")
+        from api import mirror
+        mirror.ensure_table()
+        logger.info("🪞 Mirror table ready")
     except Exception as e:
         logger.warning(f"Loyalty tables init failed: {e}")
     asyncio.create_task(_loyalty_loop())
     asyncio.create_task(_birthday_loop())
+    asyncio.create_task(_mirror_loop())
 
     logger.info("🎾 MatchBot started — matchbot.live")
 
@@ -144,6 +148,26 @@ async def _loyalty_loop():
         except Exception as e:
             logger.error(f"Loyalty loop error: {e}")
         await asyncio.sleep(3600)  # every hour
+
+
+# ─────────────────────────────────────────────────────
+# ESPEJO LOCAL — copia de todas las reservas (cada 30 min)
+# ─────────────────────────────────────────────────────
+
+async def _mirror_loop():
+    """Sincroniza el espejo local con Playtomic cada 30 minutos, para que
+    MatchBot tenga copia completa de TODAS las reservas (incluidas las
+    que el staff crea en el Manager)."""
+    from api import mirror
+    await asyncio.sleep(420)
+    while True:
+        try:
+            await mirror.sync(playtomic)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Mirror loop error: {e}")
+        await asyncio.sleep(1800)
 
 
 # ─────────────────────────────────────────────────────
@@ -1433,7 +1457,8 @@ async def panel_move_booking(request: Request):
     result = await playtomic.create_booking(
         resource_id=resource_id, start_time=start_iso, duration=duration,
         customer_name=name or "Reserva", customer_phone=phone,
-        slot_price=price, private_notes=notes, payment_mode=payment_mode)
+        slot_price=price, private_notes=notes, payment_mode=payment_mode,
+        source="panel")
     if not result.get("success"):
         err = "ese horario ya está ocupado" if result.get("error") == "slot_locked" \
               else f"error al crear ({str(result.get('error'))[:100]})"
@@ -1473,6 +1498,27 @@ async def panel_save_settings(request: Request):
     return HTMLResponse(f"<h3>✅ Configuración guardada ({len(saved)} valores).</h3>"
                         f"<p>Los cambios aplican en ~1 minuto.</p>"
                         f"<a href='/panel'>← Volver al panel</a>")
+
+
+@app.get("/api/mirror/status")
+async def mirror_status():
+    """Estado del espejo local de reservas."""
+    row = execute("SELECT COUNT(*) AS n, MAX(updated_at) AS last FROM bookings_mirror",
+                  fetch_one=True) or {}
+    by_src = execute("SELECT source, COUNT(*) AS n FROM bookings_mirror GROUP BY source",
+                     fetch_all=True) or []
+    return {"total": int(row.get("n") or 0),
+            "ultima_actualizacion": str(row.get("last") or ""),
+            "por_fuente": {r["source"]: int(r["n"]) for r in by_src}}
+
+
+@app.post("/api/mirror/sync")
+async def mirror_sync_now(request: Request):
+    """Forzar sincronización del espejo (X-Voice-Key)."""
+    from api import voice, mirror
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida")
+    return await mirror.sync(playtomic)
 
 
 @app.post("/api/panel/reset-admin")
