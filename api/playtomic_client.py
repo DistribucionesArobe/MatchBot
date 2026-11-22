@@ -1392,42 +1392,86 @@ class PlaytomicClient:
             # within the newest 200 matches per sport.
             import asyncio as _aio
 
-            async def _fetch_sport(sport: str):
+            # Hasta dónde paginar hacia atrás: 35 días antes de hoy (o del
+            # día pedido). Con sort desc (lo más futuro primero), seguimos
+            # pidiendo páginas hasta rebasar esa fecha — así un club con
+            # cientos de reservas a futuro no deja fuera la semana actual.
+            if date_str:
                 try:
-                    return await self.client.get(
-                        f"{PLAYTOMIC_API}/v1/matches",
-                        headers={
-                            "Authorization": f"Bearer {self.tenant_token}",
-                            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
-                            "x-authorization-scope": f"tenant:{TENANT_ID}",
-                        },
-                        params={
-                            "tenant_id": TENANT_ID,
-                            "sport_id": sport,
-                            "sort": "start_date:desc",
-                            "size": 200,
-                        },
-                    )
-                except Exception as e:
-                    logger.warning(f"List matches {sport} failed: {e}")
+                    _target = datetime.fromisoformat(date_str)
+                except ValueError:
+                    _target = datetime.utcnow()
+            else:
+                _target = datetime.utcnow()
+            min_needed = _target - timedelta(days=35)
+            MAX_PAGES = 10
+
+            def _page_items(r):
+                if r is None or r.status_code != 200:
                     return None
+                data = r.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    return data.get("matches", data.get("results", []))
+                return []
+
+            def _oldest_start(items):
+                oldest = None
+                for m in items:
+                    s = str(m.get("start_date") or "")[:19]
+                    try:
+                        dt = datetime.fromisoformat(s)
+                        if oldest is None or dt < oldest:
+                            oldest = dt
+                    except ValueError:
+                        continue
+                return oldest
+
+            async def _fetch_sport(sport: str):
+                collected = []
+                pages_info = []
+                for page in range(MAX_PAGES):
+                    try:
+                        r = await self.client.get(
+                            f"{PLAYTOMIC_API}/v1/matches",
+                            headers={
+                                "Authorization": f"Bearer {self.tenant_token}",
+                                "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+                                "x-authorization-scope": f"tenant:{TENANT_ID}",
+                            },
+                            params={
+                                "tenant_id": TENANT_ID,
+                                "sport_id": sport,
+                                "sort": "start_date:desc",
+                                "size": 200,
+                                "page": page,
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"List matches {sport} p{page} failed: {e}")
+                        pages_info.append(f"p{page}:exception")
+                        break
+                    if r.status_code != 200:
+                        pages_info.append(f"p{page}:{r.status_code}")
+                        break
+                    items = _page_items(r) or []
+                    pages_info.append(f"p{page}:{len(items)}")
+                    collected.extend(items)
+                    if len(items) < 200:
+                        break  # última página
+                    oldest = _oldest_start(items)
+                    if oldest and oldest < min_needed:
+                        break  # ya cubrimos el rango necesario
+                return collected, pages_info
 
             self._last_list_debug = {}
-            responses = await _aio.gather(_fetch_sport("PADEL"), _fetch_sport("FOOTBALL7"))
-            for i, r in enumerate(responses):
+            results = await _aio.gather(_fetch_sport("PADEL"), _fetch_sport("FOOTBALL7"))
+            for i, (items, pages_info) in enumerate(results):
                 sport_lbl = ["PADEL", "FOOTBALL7"][i]
-                if r is None:
-                    self._last_list_debug[sport_lbl] = "exception"
-                    continue
-                self._last_list_debug[sport_lbl] = f"{r.status_code}" + ("" if r.status_code == 200 else f": {r.text[:120]}")
-                logger.info(f"List matches {sport_lbl}: {r.status_code}")
-                if r.status_code == 200:
-                    data = r.json()
-                    if isinstance(data, list):
-                        all_matches.extend(data)
-                    elif isinstance(data, dict):
-                        items = data.get("matches", data.get("results", []))
-                        all_matches.extend(items)
+                self._last_list_debug[sport_lbl] = ",".join(pages_info)
+                logger.info(f"List matches {sport_lbl}: {len(items)} items ({pages_info})")
+                all_matches.extend(items)
 
             # Deduplicate by match_id
             seen = set()
