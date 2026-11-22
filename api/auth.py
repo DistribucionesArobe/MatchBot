@@ -28,15 +28,26 @@ def _secret() -> str:
 
 
 def _hash(password: str) -> str:
-    from passlib.hash import bcrypt
-    return bcrypt.hash(password)
+    """PBKDF2-SHA256 (stdlib, sin dependencias frágiles)."""
+    import hashlib, secrets
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000).hex()
+    return f"pbkdf2${salt}${h}"
 
 
 def _verify_hash(password: str, hashed: str) -> bool:
-    from passlib.hash import bcrypt
+    import hashlib, hmac
     try:
+        if hashed.startswith("pbkdf2$"):
+            _, salt, h = hashed.split("$", 2)
+            calc = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                       salt.encode(), 200_000).hex()
+            return hmac.compare_digest(calc, h)
+        # Legacy bcrypt (si existiera)
+        from passlib.hash import bcrypt
         return bcrypt.verify(password, hashed)
-    except Exception:
+    except Exception as e:
+        logger.error(f"verify_hash failed: {e}")
         return False
 
 

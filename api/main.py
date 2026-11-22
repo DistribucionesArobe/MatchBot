@@ -1259,6 +1259,26 @@ async def panel_logout():
     return resp
 
 
+@app.post("/api/panel/reset-admin")
+async def panel_reset_admin(request: Request):
+    """Rescate: recrea el superadmin 'alejandro'. Requiere X-Voice-Key.
+    Password = env SUPERADMIN_PASSWORD (o VOICE_API_KEY si no está)."""
+    from api import auth, voice
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida")
+    pwd = os.getenv("SUPERADMIN_PASSWORD", "") or os.getenv("VOICE_API_KEY", "")
+    if not pwd:
+        return {"ok": False, "error": "Sin SUPERADMIN_PASSWORD ni VOICE_API_KEY"}
+    try:
+        auth.ensure_table()
+        auth.create_user("alejandro", pwd, "Alejandro", "superadmin")
+        row = execute("SELECT COUNT(*) AS n FROM panel_users", fetch_one=True)
+        return {"ok": True, "users": int(row["n"]) if row else 0,
+                "msg": "Superadmin 'alejandro' recreado con la password de SUPERADMIN_PASSWORD (o la voice key)"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
 @app.post("/api/panel/users")
 async def panel_create_user(request: Request):
     """Crear/actualizar usuario del panel (solo superadmin). ?off=usuario desactiva."""
