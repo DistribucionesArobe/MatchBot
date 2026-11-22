@@ -686,8 +686,8 @@ document.querySelector('#bookmodal form').addEventListener('submit', function(e)
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (d.ok) {
-        toast('✅ Reserva creada para ' + d.name);
-        setTimeout(function(){ location.href = '/panel?date=' + DAYISO; }, 700);
+        toast('✅ Reserva creada para ' + d.name + ' — actualizando calendario...');
+        setTimeout(function(){ location.href = '/panel?date=' + DAYISO; }, 2500);
       } else {
         toast('😕 ' + (d.error || 'No se pudo crear'), true);
         btn.disabled = false; btn.textContent = 'Crear reserva';
@@ -752,7 +752,8 @@ document.querySelector('#bookmodal form').addEventListener('submit', function(e)
     fetch('/api/panel/move', {method:'POST', body:fd})
       .then(function(r){ return r.json(); })
       .then(function(r2){
-        if (r2.ok) { toast('✅ Reserva movida'); setTimeout(function(){ location.reload(); }, 700); }
+        if (r2.ok) { toast('✅ Reserva movida — actualizando calendario...');
+                     setTimeout(function(){ location.reload(); }, 2500); }
         else { toast('😕 ' + (r2.error || 'No se pudo mover'), true);
                setTimeout(function(){ location.reload(); }, 1800); }
       })
