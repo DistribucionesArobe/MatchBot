@@ -167,47 +167,68 @@ def calendar_html(courts: list[str], day_matches: list[dict], day: date_cls) -> 
 
 
 def clientes_html() -> str:
+    # Base de clientes registrados + actividad de sellos (join por últimos 10 dígitos)
     try:
         rows = execute("""
-            SELECT lb.wa_phone,
-                   COUNT(*) FILTER (WHERE lb.status='stamped')   AS sellos_total,
-                   COUNT(*) FILTER (WHERE lb.status='pending')   AS pendientes,
-                   COUNT(*)                                       AS reservas,
-                   MAX(lb.created_at)                             AS ultima
-            FROM loyalty_bookings lb
-            GROUP BY lb.wa_phone
-            ORDER BY reservas DESC
-            LIMIT 100
+            SELECT c.phone10, c.name, c.birthday, c.source,
+                   COALESCE(c.bookings_count, 0) AS reservas,
+                   c.last_booking_at AS ultima,
+                   COALESCE(l.sellos, 0) AS sellos_total
+            FROM customers c
+            LEFT JOIN (
+                SELECT RIGHT(wa_phone, 10) AS p10,
+                       COUNT(*) FILTER (WHERE status='stamped') AS sellos
+                FROM loyalty_bookings GROUP BY RIGHT(wa_phone, 10)
+            ) l ON l.p10 = c.phone10
+            ORDER BY reservas DESC, c.created_at DESC
+            LIMIT 200
         """, fetch_all=True) or []
     except Exception as e:
         logger.error(f"panel clientes query: {e}")
         rows = []
 
-    names = {}
+    # Clientes con actividad de sellos que aún no se registran con nombre
+    extra = []
     try:
-        for r in execute("SELECT wa_phone, data->>'customer_name' AS n FROM wa_booking_state", fetch_all=True) or []:
-            if r.get("n"):
-                names[r["wa_phone"]] = r["n"]
+        known = {r["phone10"] for r in rows}
+        for r in execute("""
+            SELECT RIGHT(wa_phone,10) AS p10, COUNT(*) AS reservas,
+                   COUNT(*) FILTER (WHERE status='stamped') AS sellos,
+                   MAX(created_at) AS ultima
+            FROM loyalty_bookings GROUP BY RIGHT(wa_phone,10)
+        """, fetch_all=True) or []:
+            if r["p10"] not in known:
+                extra.append(r)
     except Exception:
         pass
 
-    if not rows:
-        return '<div class="empty">Aún no hay clientes registrados por el bot. Aparecerán conforme reserven.</div>'
+    if not rows and not extra:
+        return '<div class="empty">Aún no hay clientes registrados. Se registran solos al hacer su primera reserva por el bot o por llamada.</div>'
 
     body = ""
     for r in rows:
-        phone = r["wa_phone"]
         cycle = int(r["sellos_total"]) % 10
+        fuente = "📞" if (r.get("source") == "llamada") else "💬"
         body += (
-            f'<tr><td><b>{_esc(names.get(phone, "Cliente"))}</b></td>'
-            f'<td>+{_esc(phone)}</td>'
+            f'<tr><td><b>{_esc(r["name"] or "Sin nombre")}</b> {fuente}</td>'
+            f'<td>+52 {_esc(r["phone10"])}</td>'
+            f'<td>{r["birthday"] or "—"}</td>'
+            f'<td>{r["reservas"]}</td>'
+            f'<td>🎾 {cycle}/10</td>'
+            f'<td>{r["ultima"].strftime("%d/%m/%Y") if r["ultima"] else "—"}</td></tr>'
+        )
+    for r in extra:
+        cycle = int(r["sellos"]) % 10
+        body += (
+            f'<tr><td><i>Sin registrar</i></td>'
+            f'<td>+52 {_esc(r["p10"])}</td><td>—</td>'
             f'<td>{r["reservas"]}</td>'
             f'<td>🎾 {cycle}/10</td>'
             f'<td>{r["ultima"].strftime("%d/%m/%Y") if r["ultima"] else "—"}</td></tr>'
         )
     return (
-        '<table class="tbl"><tr><th>Cliente</th><th>Teléfono</th>'
-        '<th>Reservas bot</th><th>Tarjeta</th><th>Última</th></tr>' + body + '</table>'
+        '<table class="tbl"><tr><th>Cliente</th><th>Teléfono</th><th>🎂 Cumple</th>'
+        '<th>Reservas</th><th>Tarjeta</th><th>Última</th></tr>' + body + '</table>'
     )
 
 

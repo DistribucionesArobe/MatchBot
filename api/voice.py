@@ -139,7 +139,15 @@ async def reservar(playtomic, raw_date: str, time_str: str,
             chosen["resource_id"], chosen["start"], chosen["duration"]) or \
             float(os.getenv("FALLBACK_PRICE", "300"))
 
+    # Base de clientes: si el teléfono ya está registrado, usar ese nombre
     display_name = (nombre or "Cliente llamada").strip()
+    try:
+        from api import customers
+        reg = customers.registered_name(telefono)
+        if reg:
+            display_name = reg
+    except Exception as e:
+        logger.error(f"voice customers lookup failed: {e}")
     result = await playtomic.create_booking(
         resource_id=chosen["resource_id"],
         start_time=chosen["start"],
@@ -161,6 +169,14 @@ async def reservar(playtomic, raw_date: str, time_str: str,
         loyalty.record_booking(telefono, result.get("match_id", ""), chosen["start"])
     except Exception as e:
         logger.error(f"voice loyalty failed: {e}")
+    # Base de clientes: contar reserva y registrar nombre si es nuevo
+    try:
+        from api import customers
+        customers.touch_booking(telefono, source="llamada")
+        if not customers.registered_name(telefono) and (nombre or "").strip():
+            customers.save_name(telefono, (nombre or "").strip().title(), source="llamada")
+    except Exception as e:
+        logger.error(f"voice customers failed: {e}")
     try:
         from api.promos import send_alert
         phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")

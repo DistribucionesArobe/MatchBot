@@ -75,9 +75,13 @@ async def startup():
         logger.info("🎟️ Loyalty tables ready")
         from api import promos
         promos.ensure_tables()
+        from api import customers
+        customers.ensure_table()
+        logger.info("📇 Customers table ready")
     except Exception as e:
         logger.warning(f"Loyalty tables init failed: {e}")
     asyncio.create_task(_loyalty_loop())
+    asyncio.create_task(_birthday_loop())
 
     logger.info("🎾 MatchBot started — matchbot.live")
 
@@ -130,6 +134,53 @@ async def _loyalty_loop():
         except Exception as e:
             logger.error(f"Loyalty loop error: {e}")
         await asyncio.sleep(3600)  # every hour
+
+
+# ─────────────────────────────────────────────────────
+# CUMPLEAÑOS — felicitación automática (plantilla promo)
+# ─────────────────────────────────────────────────────
+
+async def _birthday_loop():
+    """Cada hora revisa si es ~11 AM local y felicita a los clientes
+    que cumplen años hoy (una vez por año, respeta las bajas de promos)."""
+    from api import customers, promos
+    from whatsapp.sender import send_template, send_text
+    await asyncio.sleep(600)
+    offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+    while True:
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            local = _dt.utcnow() + _td(hours=offset)
+            if 11 <= local.hour < 12:
+                cumpleaneros = customers.today_birthdays()
+                if cumpleaneros:
+                    phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+                    token = os.getenv("WHATSAPP_TOKEN", "")
+                    notify_owner = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
+                    optout = promos.opted_out_set()
+                    for c in cumpleaneros:
+                        to = c.get("wa_phone") or ("52" + c["phone10"])
+                        if c["phone10"] in {p[-10:] for p in optout}:
+                            customers.mark_bday_greeted(c["phone10"])
+                            continue
+                        first = (c.get("name") or "").split()[0]
+                        msg = (f"🎂 ¡Feliz cumpleaños, {first}! 🎉 Todo el equipo del club "
+                               f"te desea un gran día. Ven a celebrarlo a la cancha 🎾")
+                        try:
+                            await send_template(phone_id, token, to,
+                                                promos.TEMPLATE_NAME, [msg],
+                                                promos.TEMPLATE_LANG)
+                            customers.mark_bday_greeted(c["phone10"])
+                            await send_text(phone_id, token, notify_owner,
+                                f"🎂 Hoy cumple años *{c.get('name')}* (+52 {c['phone10']}). "
+                                f"Ya le mandé felicitación. ¡Échale porras si viene!")
+                        except Exception as e:
+                            logger.error(f"birthday greet failed for {c['phone10']}: {e}")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error(f"Birthday loop error: {e}")
+        await asyncio.sleep(3600)
 
 
 # ─────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ from api.availability import get_available_slots, get_slots_summary, check_slot_
 from api.bookings import create_booking, cancel_booking, get_customer_bookings, BookingError
 from api.playtomic_client import playtomic
 from api import loyalty
+from api import customers
 from whatsapp.sender import send_text, send_interactive_buttons, send_interactive_list
 
 # Use Playtomic for availability/booking if configured
@@ -107,10 +108,17 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
     state = state_row["state"] if state_row else "idle"
     data = state_row["data"] if state_row else {}
 
-    # Always keep customer info updated from WhatsApp
+    # Always keep customer info updated. El nombre REGISTRADO en la base
+    # de clientes manda sobre el nombre del perfil de WhatsApp.
+    reg_name = ""
+    try:
+        reg_name = customers.registered_name(wa_phone)
+    except Exception as e:
+        logger.error(f"customers lookup failed: {e}")
+    best_name = reg_name or profile_name
     data["customer_phone"] = wa_phone
-    if profile_name:
-        data["customer_name"] = profile_name
+    if best_name:
+        data["customer_name"] = best_name
 
     # ── MENU / GREETING (works from ANY state — resets the flow) ──
     # Only trigger on explicit button OR plain text (not list_reply selections
@@ -126,8 +134,8 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         # ── START BOOKING ──
         if _matches_any(text_lower, BOOK_TRIGGERS) or button_id == "btn_reservar":
             initial_data = {"customer_phone": wa_phone}
-            if profile_name:
-                initial_data["customer_name"] = profile_name
+            if best_name:
+                initial_data["customer_name"] = best_name
             _set_state(club_id, wa_phone, "choosing_date", initial_data)
             await _send_date_picker(phone_id, token, wa_phone)
             return
@@ -135,8 +143,8 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         # ── START CLASS BOOKING ──
         if _matches_any(text_lower, CLASS_TRIGGERS) or button_id == "btn_clase":
             initial_data = {"customer_phone": wa_phone, "is_class": True}
-            if profile_name:
-                initial_data["customer_name"] = profile_name
+            if best_name:
+                initial_data["customer_name"] = best_name
             _set_state(club_id, wa_phone, "choosing_date", initial_data)
             await _send_date_picker(phone_id, token, wa_phone, is_class=True)
             return
@@ -165,6 +173,38 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
             await send_text(phone_id, token, wa_phone,
                 "✅ Listo, ya no recibirás promociones. "
                 "Puedes seguir usando el bot para reservar normalmente.")
+            return
+
+        # ── DATOS DE CLIENTE ──
+        if text_lower in ("mis datos", "datos", "mi perfil", "perfil", "mi registro"):
+            try:
+                await send_text(phone_id, token, wa_phone, customers.datos_message(wa_phone))
+            except Exception as e:
+                logger.error(f"customers datos failed: {e}")
+            return
+
+        if text_lower.startswith("soy ") and len(text.strip()) > 6:
+            nuevo = text.strip()[4:].strip()
+            if nuevo and not any(ch.isdigit() for ch in nuevo):
+                customers.save_name(wa_phone, nuevo.title())
+                _set_state(club_id, wa_phone, "idle", {})
+                await send_text(phone_id, token, wa_phone,
+                    f"✅ Listo, quedaste registrado como *{nuevo.title()}*. "
+                    f"Tus próximas reservas saldrán a ese nombre. 🎾")
+            else:
+                await send_text(phone_id, token, wa_phone,
+                    "Escríbelo así: *soy Juan Pérez* (solo tu nombre, sin números)")
+            return
+
+        if text_lower.startswith("cumple"):
+            bd = customers.parse_birthday(text_lower.replace("cumpleaños", "", 1).replace("cumple", "", 1))
+            if bd:
+                customers.save_birthday(wa_phone, bd)
+                await send_text(phone_id, token, wa_phone,
+                    f"🎂 ¡Anotado! Tu cumpleaños quedó como *{bd}*. Espera una sorpresa en tu día 🎁")
+            else:
+                await send_text(phone_id, token, wa_phone,
+                    "Escríbelo así: *cumple 15/05* (día/mes)")
             return
 
         # ── LOYALTY CARD ──
@@ -198,9 +238,56 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         await _handle_cancel_confirm(phone_id, token, wa_phone, club_id, text, button_id, data)
     elif state == "cancel_confirming":
         await _handle_cancel_final(phone_id, token, wa_phone, club_id, text, button_id, data)
+    elif state == "reg_name":
+        await _handle_reg_name(phone_id, token, wa_phone, club_id, text, data)
+    elif state == "reg_birthday":
+        await _handle_reg_birthday(phone_id, token, wa_phone, club_id, text, data)
     else:
         # Unknown input in idle state
         await _send_main_menu(phone_id, token, wa_phone, club.get("name", "MatchBot"))
+
+
+# ─────────────────────────────────────────────────────
+# REGISTRO DE CLIENTE (nombre + cumpleaños, 1 sola vez)
+# ─────────────────────────────────────────────────────
+
+async def _handle_reg_name(phone_id, token, to, club_id, text, data):
+    name = (text or "").strip()
+    if len(name) < 3 or any(ch.isdigit() for ch in name):
+        await send_text(phone_id, token, to,
+            "Escribe tu *nombre completo*, por ejemplo: *Juan Pérez* 😊\n"
+            "(o escribe *salir* para dejarlo para después)")
+        return
+    if name.lower() in ("salir", "no", "luego", "despues", "después"):
+        _set_state(club_id, to, "idle", {})
+        await send_text(phone_id, token, to, "👍 Sin problema, te pregunto en tu próxima reserva.")
+        return
+    pretty = name.title()
+    customers.save_name(to, pretty)
+    _set_state(club_id, to, "reg_birthday", {})
+    first = pretty.split()[0]
+    await send_text(phone_id, token, to,
+        f"✅ ¡Gracias, {first}! Ya quedaste registrado — tus próximas reservas "
+        f"saldrán a tu nombre automáticamente.\n\n"
+        f"🎂 Último paso (opcional): ¿cuándo es tu *cumpleaños*? "
+        f"Escríbelo como *15/05* (día/mes), o escribe *no* para saltarlo.")
+
+
+async def _handle_reg_birthday(phone_id, token, to, club_id, text, data):
+    t = (text or "").strip().lower()
+    if t in ("no", "n", "salir", "luego", "despues", "después", "skip"):
+        _set_state(club_id, to, "idle", {})
+        await send_text(phone_id, token, to, "👍 ¡Listo, registro completo! Nos vemos en la cancha 🎾")
+        return
+    bd = customers.parse_birthday(t)
+    if bd:
+        customers.save_birthday(to, bd)
+        _set_state(club_id, to, "idle", {})
+        await send_text(phone_id, token, to,
+            f"🎂 ¡Anotado ({bd})! Espera una sorpresa del club en tu día 🎁🎾")
+    else:
+        await send_text(phone_id, token, to,
+            "No te entendí 😅 Escríbelo como *día/mes* (ejemplo *15/05*), o escribe *no*.")
 
 
 # ─────────────────────────────────────────────────────
@@ -831,6 +918,19 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 )
 
             await send_text(phone_id, token, to, confirmation_msg)
+
+            # ── Base de clientes: contar reserva y registrar nombre la 1a vez ──
+            if result.get("success"):
+                try:
+                    customers.touch_booking(to, source="chat")
+                    if not customers.registered_name(to):
+                        _set_state(club_id, to, "reg_name", {})
+                        await send_text(phone_id, token, to,
+                            "📇 *Una última cosa:* para registrarte como cliente del club "
+                            "y que tus reservas siempre salgan a tu nombre, "
+                            "¿cuál es tu *nombre completo*?")
+                except Exception as e:
+                    logger.error(f"customers registration prompt failed: {e}")
 
             # Notify profes/coordinación about new CLASS request
             if is_class and result.get("success") and CLASS_NOTIFY_PHONE:
