@@ -664,8 +664,15 @@ class PlaytomicClient:
                 continue
             busy.setdefault(rid, []).append((s, e))
 
-        OPEN_MIN = 6 * 60 + 30    # 06:30 local
-        CLOSE_MIN = 23 * 60 + 30  # 23:30 local
+        # Horario del club según el día (editable en /panel > Configuración)
+        try:
+            from api import settings as app_settings
+            _wd = datetime.fromisoformat(date_str).weekday()
+            OPEN_MIN, CLOSE_MIN = app_settings.club_hours(_wd)
+        except Exception as e:
+            logger.warning(f"settings club_hours failed ({e}); usando 6:30-23:30")
+            OPEN_MIN = 6 * 60 + 30
+            CLOSE_MIN = 23 * 60 + 30
         DUR = 90
         now_utc = datetime.utcnow()
 

@@ -137,7 +137,7 @@ async def reservar(playtomic, raw_date: str, time_str: str,
     if price <= 0:
         price = await playtomic.calculate_price(
             chosen["resource_id"], chosen["start"], chosen["duration"]) or \
-            float(os.getenv("FALLBACK_PRICE", "300"))
+            float(__import__("api.settings", fromlist=["settings"]).get("precio_respaldo") or os.getenv("FALLBACK_PRICE", "300"))
 
     # Base de clientes: si el teléfono ya está registrado, usar ese nombre
     display_name = (nombre or "Cliente llamada").strip()

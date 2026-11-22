@@ -85,6 +85,9 @@ async def startup():
         auth.ensure_table()
         auth.bootstrap_superadmin()
         logger.info("🔐 Panel auth ready")
+        from api import settings as app_settings
+        app_settings.ensure_table()
+        logger.info("⚙️ Settings table ready")
     except Exception as e:
         logger.warning(f"Loyalty tables init failed: {e}")
     asyncio.create_task(_loyalty_loop())
@@ -1260,11 +1263,13 @@ async def panel_logout():
 
 
 @app.post("/api/panel/book")
-async def panel_create_booking(request: Request):
+async def panel_create_booking(request: Request, ajax: int = Query(0)):
     """Crear reserva desde el calendario del panel (staff o superadmin)."""
     from api import auth, customers, loyalty
     user = auth.current_user(request)
     if not user:
+        if ajax:
+            return {"ok": False, "error": "Sesión expirada, vuelve a entrar"}
         return HTMLResponse("<h3>❌ Inicia sesión para crear reservas.</h3>"
                             "<a href='/panel/login'>→ Iniciar sesión</a>", status_code=403)
     form = await request.form()
@@ -1281,6 +1286,8 @@ async def panel_create_booking(request: Request):
         duration, players = 90, 4
     back = f"<p><a href='/panel?date={date_str}'>← Volver al calendario</a></p>"
     if not (court and date_str and time_str and name):
+        if ajax:
+            return {"ok": False, "error": "Faltan datos (cancha, fecha, hora o nombre)"}
         return HTMLResponse(f"<h3>❌ Faltan datos (cancha, fecha, hora o nombre).</h3>{back}",
                             status_code=400)
 
@@ -1293,6 +1300,8 @@ async def panel_create_booking(request: Request):
         logger.error(f"panel book resource lookup: {e}")
         resource_id = None
     if not resource_id:
+        if ajax:
+            return {"ok": False, "error": f"No encontré la cancha '{court}'"}
         return HTMLResponse(f"<h3>❌ No encontré la cancha '{court}'.</h3>{back}",
                             status_code=400)
 
@@ -1304,6 +1313,8 @@ async def panel_create_booking(request: Request):
         utc_dt = local_dt - _td(hours=offset)
         start_iso = utc_dt.strftime("%Y-%m-%dT%H:%M:%S")
     except ValueError:
+        if ajax:
+            return {"ok": False, "error": "Fecha u hora inválida"}
         return HTMLResponse(f"<h3>❌ Fecha u hora inválida.</h3>{back}", status_code=400)
 
     price = 0.0
@@ -1326,6 +1337,8 @@ async def panel_create_booking(request: Request):
     if not result.get("success"):
         err = "ese horario se acaba de ocupar" if result.get("error") == "slot_locked" \
               else f"error técnico ({str(result.get('error'))[:120]})"
+        if ajax:
+            return {"ok": False, "error": f"No se pudo crear: {err}"}
         return HTMLResponse(f"<h3>😕 No se pudo crear la reserva: {err}.</h3>{back}",
                             status_code=502)
 
@@ -1342,8 +1355,124 @@ async def panel_create_booking(request: Request):
 
     detalle = (f"{court} · {date_str} {time_str} · {duration} min · "
                f"${price:.0f} MXN · {cobro_txt.lower()}")
+    if ajax:
+        return {"ok": True, "name": name, "detalle": detalle}
     return HTMLResponse(f"<h3>✅ Reserva creada para <b>{name}</b></h3>"
                         f"<p>{detalle}</p>{back}")
+
+
+@app.post("/api/panel/move")
+async def panel_move_booking(request: Request):
+    """Mover una reserva (drag & drop): crea en el nuevo lugar y cancela la vieja."""
+    from api import auth
+    user = auth.current_user(request)
+    if not user:
+        return {"ok": False, "error": "Sesión expirada, vuelve a entrar"}
+    form = await request.form()
+    match_id = (form.get("match_id") or "").strip()
+    court = (form.get("court") or "").strip()
+    date_str = (form.get("date") or "").strip()
+    time_str = (form.get("time") or "").strip()[:5]
+    try:
+        duration = int(form.get("duration") or 90)
+    except ValueError:
+        duration = 90
+    if not (match_id and court and date_str and time_str):
+        return {"ok": False, "error": "Faltan datos del movimiento"}
+
+    # Datos de la reserva original
+    old = await playtomic.get_match(match_id)
+    if not old:
+        return {"ok": False, "error": "No encontré la reserva original"}
+    if "CANCEL" in str(old.get("status", "")).upper():
+        return {"ok": False, "error": "Esa reserva ya está cancelada"}
+    name, phone = "", ""
+    for t in old.get("teams", []):
+        for p in t.get("players", []):
+            if p.get("name"):
+                name = p["name"]
+                break
+        if name:
+            break
+    # El bot guarda "Nombre (teléfono)" — separar
+    if "(" in name and name.rstrip().endswith(")"):
+        base, tel = name.rsplit("(", 1)
+        name, phone = base.strip(), "".join(c for c in tel if c.isdigit())
+    old_pay = str((old.get("registration_info") or {}).get("payment_type", "")).upper()
+    payment_mode = "single" if old_pay == "SINGLE_PAYER" else "split"
+    notes = old.get("private_notes") or ""
+    move_tag = f"↪️ Movida desde el panel por {user.get('name') or user.get('sub')}"
+    notes = f"{notes} | {move_tag}" if notes else move_tag
+
+    try:
+        await playtomic._ensure_resource_names()
+        resource_id = next((rid for rid, nm in playtomic._resource_names.items()
+                            if nm == court), None)
+    except Exception:
+        resource_id = None
+    if not resource_id:
+        return {"ok": False, "error": f"No encontré la cancha '{court}'"}
+
+    offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        local_dt = _dt.fromisoformat(f"{date_str}T{time_str}:00")
+        start_iso = (local_dt - _td(hours=offset)).strftime("%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return {"ok": False, "error": "Fecha u hora inválida"}
+
+    price = 0.0
+    try:
+        price = await playtomic.calculate_price(resource_id, start_iso, duration) or 0.0
+    except Exception:
+        pass
+    if price <= 0:
+        price = float(os.getenv("FALLBACK_PRICE", "300"))
+
+    # 1) Crear primero en el nuevo lugar (si falla, la original queda intacta)
+    result = await playtomic.create_booking(
+        resource_id=resource_id, start_time=start_iso, duration=duration,
+        customer_name=name or "Reserva", customer_phone=phone,
+        slot_price=price, private_notes=notes, payment_mode=payment_mode)
+    if not result.get("success"):
+        err = "ese horario ya está ocupado" if result.get("error") == "slot_locked" \
+              else f"error al crear ({str(result.get('error'))[:100]})"
+        return {"ok": False, "error": f"No se movió: {err}. La reserva original sigue igual"}
+
+    # 2) Cancelar la original
+    try:
+        cancel = await playtomic.cancel_match(match_id)
+        if cancel.get("error"):
+            logger.error(f"move: cancel original failed: {cancel}")
+            return {"ok": True,
+                    "warning": "Se creó la nueva pero NO pude cancelar la original — cancélala a mano"}
+        from api import loyalty as _loy
+        _loy.mark_cancelled(match_id)
+        if phone:
+            full = phone if len(phone) > 10 else "52" + phone
+            _loy.record_booking(full, result.get("match_id", ""), start_iso)
+    except Exception as e:
+        logger.error(f"move: cancel step failed: {e}")
+    return {"ok": True}
+
+
+@app.post("/api/panel/settings")
+async def panel_save_settings(request: Request):
+    """Guardar la configuración del club (solo superadmin)."""
+    from api import auth, settings as st
+    user = auth.current_user(request)
+    if not user or user.get("role") != "superadmin":
+        return HTMLResponse("<h3>❌ Solo el super admin puede cambiar la configuración.</h3>"
+                            "<a href='/panel'>← Volver</a>", status_code=403)
+    form = await request.form()
+    saved = []
+    for key in st.DEFAULTS:
+        if key in form:
+            st.set_value(key, str(form.get(key) or ""))
+            saved.append(key)
+    return HTMLResponse(f"<h3>✅ Configuración guardada ({len(saved)} valores).</h3>"
+                        f"<p>Los cambios aplican en ~1 minuto.</p>"
+                        f"<a href='/panel'>← Volver al panel</a>")
 
 
 @app.post("/api/panel/reset-admin")

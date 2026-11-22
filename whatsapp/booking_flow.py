@@ -57,7 +57,16 @@ def _local_today() -> date:
     return local_dt.date()
 
 # Club owner notification — receives WhatsApp alerts on new bookings/cancellations
-CLUB_NOTIFY_PHONE = os.getenv("CLUB_NOTIFY_PHONE", "528342546466")
+def _settings_get(key, env, default):
+    try:
+        from api import settings as _st
+        return _st.get(key) or os.getenv(env, default)
+    except Exception:
+        return os.getenv(env, default)
+
+
+def _club_phone() -> str:
+    return _settings_get("tel_avisos", "CLUB_NOTIFY_PHONE", "528342546466")
 
 logger = logging.getLogger("matchbot.flow")
 
@@ -70,10 +79,15 @@ MENU_TRIGGERS = {"menu", "menú", "opciones", "ayuda", "help", "salir", "inicio"
 LOYALTY_TRIGGERS = {"sellos", "sello", "tarjeta", "mis sellos", "puntos"}
 CLASS_TRIGGERS = {"clase", "clases", "entrenador", "profe", "entrenamiento"}
 
-# Precio de la clase (env CLASS_PRICE, en MXN). 0 = "el club confirma costo".
-CLASS_PRICE = float(os.getenv("CLASS_PRICE", "600"))
+# Precio de la clase (configurable en /panel, en MXN). 0 = "el club confirma costo".
+def _class_price() -> float:
+    try:
+        return float(_settings_get("precio_clase", "CLASS_PRICE", "600"))
+    except (ValueError, TypeError):
+        return 600.0
 # A quién avisar para asignar profe (coordinación de profes)
-CLASS_NOTIFY_PHONE = os.getenv("CLASS_NOTIFY_PHONE", "528342546466")
+def _class_phone() -> str:
+    return _settings_get("tel_clases", "CLASS_NOTIFY_PHONE", "528342546466")
 
 
 def _matches_any(text: str, triggers: set) -> bool:
@@ -155,7 +169,7 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
             return
 
         # ── PROMO BROADCAST (solo el dueño) ──
-        if wa_phone == CLUB_NOTIFY_PHONE and text_lower.startswith("promo:"):
+        if wa_phone == _club_phone() and text_lower.startswith("promo:"):
             promo_text = text.split(":", 1)[1].strip()
             if not promo_text:
                 await send_text(phone_id, token, wa_phone, "Escribe la promo así: *promo: 2x1 este jueves*")
@@ -163,7 +177,7 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
             from api import promos
             import asyncio as _aio
             await send_text(phone_id, token, wa_phone, "📣 Enviando promo a todos los clientes... te aviso al terminar.")
-            _aio.create_task(promos.broadcast(phone_id, token, promo_text, CLUB_NOTIFY_PHONE))
+            _aio.create_task(promos.broadcast(phone_id, token, promo_text, _club_phone()))
             return
 
         # ── BAJA (opt-out de promociones) ──
@@ -615,7 +629,7 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
             # Si alguna cotización falló, usa el precio típico como respaldo
             for c in matching:
                 if c["price"] <= 0:
-                    c["price"] = float(os.getenv("FALLBACK_PRICE", "300"))
+                    c["price"] = float(_settings_get("precio_respaldo", "FALLBACK_PRICE", "300"))
 
         if len(matching) == 1 or data.get("is_class"):
             # Clases: el cliente no elige cancha — se toma una libre
@@ -756,8 +770,8 @@ async def _send_confirmation(phone_id, token, to, data):
     phone_display = f"+{customer_phone[:2]} {customer_phone[2:]}" if len(customer_phone) > 5 else customer_phone
 
     if data.get("is_class"):
-        if CLASS_PRICE > 0:
-            price_line = f"💰 *${CLASS_PRICE:.0f} MXN* (clase)"
+        if _class_price() > 0:
+            price_line = f"💰 *${_class_price():.0f} MXN* (clase)"
         else:
             price_line = "💰 El club te confirmará el costo"
         body = (
@@ -825,7 +839,7 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
             # ── Monedero: ¿el saldo alcanza para pagar en automático? ──
             due = price
             if is_class:
-                due = CLASS_PRICE if CLASS_PRICE > 0 else 600.0
+                due = _class_price() if _class_price() > 0 else 600.0
             elif reward:
                 due = 0.0 if reward["reward_type"] == "free" else price / 2
             wallet_will_pay = False
@@ -836,9 +850,9 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                 logger.error(f"wallet check failed: {e}")
 
             if is_class:
-                price = CLASS_PRICE if CLASS_PRICE > 0 else 600.0
+                price = _class_price() if _class_price() > 0 else 600.0
                 booking_name = f"CLASE {customer_name}".strip()
-                class_price_txt = f"${CLASS_PRICE:.0f}" if CLASS_PRICE > 0 else "por confirmar"
+                class_price_txt = f"${_class_price():.0f}" if _class_price() > 0 else "por confirmar"
                 booking_notes = (
                     f"🎓 SOLICITUD DE CLASE vía bot — ASIGNAR PROFE. "
                     f"Cliente: {customer_name} (+{customer_phone}). "
@@ -915,7 +929,7 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                     stamps_line = ""
 
                 if is_class:
-                    class_price_line = (f"💰 *${CLASS_PRICE:.0f} MXN*" if CLASS_PRICE > 0
+                    class_price_line = (f"💰 *${_class_price():.0f} MXN*" if _class_price() > 0
                                         else "💰 El club te confirmará el costo")
                     if wallet_will_pay and wallet_remaining is not None:
                         class_price_line += (f" — *PAGADA* ✅ con tu monedero "
@@ -976,11 +990,11 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                     logger.error(f"customers registration prompt failed: {e}")
 
             # Notify profes/coordinación about new CLASS request
-            if is_class and result.get("success") and CLASS_NOTIFY_PHONE:
+            if is_class and result.get("success") and _class_phone():
                 try:
                     from api.promos import send_alert as _send_alert
-                    class_price_txt = f"${CLASS_PRICE:.0f} MXN" if CLASS_PRICE > 0 else "por confirmar"
-                    await _send_alert(phone_id, token, CLASS_NOTIFY_PHONE,
+                    class_price_txt = f"${_class_price():.0f} MXN" if _class_price() > 0 else "por confirmar"
+                    await _send_alert(phone_id, token, _class_phone(),
                         f"🎓 *Nueva CLASE solicitada — ASIGNAR PROFE*\n\n"
                         f"👤 {customer_name or 'Sin nombre'}\n"
                         f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"
@@ -994,14 +1008,14 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                     logger.error(f"Failed to notify profes: {e}")
 
             # Notify club owner
-            if CLUB_NOTIFY_PHONE and not (is_class and CLASS_NOTIFY_PHONE == CLUB_NOTIFY_PHONE):
+            if _club_phone() and not (is_class and _class_phone() == _club_phone()):
                 display_name = customer_name or "Sin nombre"
                 status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
                 reward_line = f"\n{reward_note}\n" if (reward_note and result.get("success")) else ""
                 if wallet_will_pay and result.get("success"):
                     reward_line += "\n💰 PAGADA CON MONEDERO — NO COBRAR\n"
                 try:
-                    await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                    await send_text(phone_id, token, _club_phone(),
                         f"🔔 *Nueva reserva por WhatsApp*\n\n"
                         f"👤 {display_name}\n"
                         f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"
@@ -1109,11 +1123,11 @@ async def _handle_payment(phone_id, token, to, club_id, text, button_id, data):
         await send_text(phone_id, token, to, confirmation_msg)
 
         # Notify club owner
-        if CLUB_NOTIFY_PHONE:
+        if _club_phone():
             display_name = customer_name or "Sin nombre"
             status = "✅ Registrada en Playtomic" if result.get("success") else "⚠️ Registrar manualmente en Playtomic"
             try:
-                await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                await send_text(phone_id, token, _club_phone(),
                     f"🔔 *Nueva reserva por WhatsApp*\n\n"
                     f"👤 {display_name}\n"
                     f"📱 +{customer_phone[:2]} {customer_phone[2:]}\n"
@@ -1321,9 +1335,9 @@ async def _handle_cancel_confirm(phone_id, token, to, club_id, text, button_id, 
         await send_text(phone_id, token, to, f"✅ Reserva #{booking_id} cancelada exitosamente.")
 
         # Notify club owner about cancellation
-        if CLUB_NOTIFY_PHONE:
+        if _club_phone():
             try:
-                await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                await send_text(phone_id, token, _club_phone(),
                     f"❌ *Cancelación de reserva*\n\n"
                     f"👤 Cliente: {to}\n"
                     f"📋 Reserva #{booking_id}\n\n"
@@ -1367,9 +1381,9 @@ async def _handle_cancel_final(phone_id, token, to, club_id, text, button_id, da
                 f"Escribe *Reservar* cuando quieras jugar de nuevo. 🎾"
             )
             # Notify club owner
-            if CLUB_NOTIFY_PHONE:
+            if _club_phone():
                 try:
-                    await send_text(phone_id, token, CLUB_NOTIFY_PHONE,
+                    await send_text(phone_id, token, _club_phone(),
                         f"❌ *Cancelación vía bot*\n\n"
                         f"👤 Cliente: {to}\n"
                         f"📅 {_fmt_match_local(m['start'])}\n"

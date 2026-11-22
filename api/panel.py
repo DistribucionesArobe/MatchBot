@@ -90,6 +90,7 @@ def _match_row(m: dict) -> dict | None:
     else:
         kind = "normal"
     return {
+        "id": str(m.get("match_id") or m.get("id") or ""),
         "start_l": start_l,
         "dur": dur,
         "court": m.get("resource_name", "?"),
@@ -138,7 +139,9 @@ def calendar_html(courts: list[str], day_matches: list[dict], day: date_cls) -> 
             bot_tag = ' <span class="pill botp">🤖</span>' if b["bot"] else ""
             end_l = b["start_l"] + timedelta(minutes=b["dur"])
             blocks += (
-                f'<div class="block k-{b.get("kind", "normal")}" style="top:{top}px;height:{h}px">'
+                f'<div class="block k-{b.get("kind", "normal")}" '
+                f'data-mid="{_esc(b.get("id", ""))}" data-dur="{b["dur"]}" '
+                f'style="top:{top}px;height:{h}px">'
                 f'{pay_pill}{bot_tag}'
                 f'<div class="bname">{_esc(b["players"][:40])}</div>'
                 f'<div class="btime">{_fmt_hhmm(b["start_l"])} - {_fmt_hhmm(end_l)}</div>'
@@ -477,6 +480,16 @@ section.visible { display:block; }
 .modal input, .modal select { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:8px; margin-top:3px; box-sizing:border-box; }
 .modal-btns { display:flex; gap:8px; justify-content:flex-end; margin-top:0.8rem; }
 .cancelbtn { background:#f3f4f6; border:1px solid #d1d5db; border-radius:8px; padding:8px 14px; cursor:pointer; }
+.block[data-mid] { cursor:grab; }
+.block.dragging { opacity:0.75; box-shadow:0 10px 24px rgba(0,0,0,.3); z-index:30; cursor:grabbing; }
+.toast { position:fixed; bottom:22px; right:22px; background:#111827; color:white; padding:10px 16px;
+         border-radius:10px; font-size:0.85rem; z-index:99; box-shadow:0 8px 24px rgba(0,0,0,.25); }
+.toast.bad { background:#b02a2a; }
+.configform { background:white; border:1px solid #e5e7eb; border-radius:12px; padding:1.2rem; margin-bottom:1rem; }
+.configform label { display:inline-block; font-size:0.8rem; color:#374151; margin:0 1rem 0.7rem 0; }
+.configform input { display:block; border:1px solid #d1d5db; border-radius:8px; padding:7px 9px; margin-top:3px; width:150px; }
+.configform input.wide { width:330px; }
+.configform h4 { margin:0.8rem 0 0.5rem; font-size:0.85rem; color:#111827; }
 </style></head><body>
 <div class="sidebar">
   <div class="brand">Match<span>Bot</span> Manager</div>
@@ -506,6 +519,7 @@ section.visible { display:block; }
   <section id="pagos">%PAGOS%</section>
   <section id="reportes">%REPORTES%</section>
   <section id="usuarios">%USUARIOS%</section>
+  <section id="config">%CONFIG%</section>
 </div>
 
 <div id="bookmodal" class="modal-bg">
@@ -538,7 +552,7 @@ section.visible { display:block; }
 <script>
 var titles = {calendario:'📅 Calendario', reservas:'📋 Reservas', clientes:'👥 Clientes',
               premios:'🎟️ Premios', pagos:'💵 Pagos', reportes:'📊 Reportes',
-              usuarios:'👤 Usuarios'};
+              usuarios:'👤 Usuarios', config:'⚙️ Configuración'};
 document.querySelectorAll('.nav-item[data-s]').forEach(function(it){
   it.addEventListener('click', function(){
     document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
@@ -551,11 +565,102 @@ document.querySelectorAll('.nav-item[data-s]').forEach(function(it){
 });
 
 // ── Crear reserva picando el calendario ──
-var PX_MIN = %PXMIN%, GRID_START = %GRIDSTART%;
+var PX_MIN = %PXMIN%, GRID_START = %GRIDSTART%, DAYISO = '%DAYISO%';
 function closeBookModal(){ document.getElementById('bookmodal').style.display='none'; }
 document.getElementById('bookmodal').addEventListener('click', function(e){
   if (e.target === this) closeBookModal();
 });
+function toast(msg, bad){
+  var t = document.createElement('div');
+  t.className = 'toast' + (bad ? ' bad' : '');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function(){ t.remove(); }, 3500);
+}
+// Enviar sin salir de la página: el cuadro aparece al recargar el calendario
+document.querySelector('#bookmodal form').addEventListener('submit', function(e){
+  e.preventDefault();
+  var f = e.target;
+  var btn = f.querySelector('.savebtn');
+  btn.disabled = true; btn.textContent = 'Creando...';
+  fetch('/api/panel/book?ajax=1', {method:'POST', body:new FormData(f)})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.ok) {
+        toast('✅ Reserva creada para ' + d.name);
+        setTimeout(function(){ location.href = '/panel?date=' + DAYISO; }, 700);
+      } else {
+        toast('😕 ' + (d.error || 'No se pudo crear'), true);
+        btn.disabled = false; btn.textContent = 'Crear reserva';
+      }
+    })
+    .catch(function(){ toast('😕 Error de red', true);
+      btn.disabled = false; btn.textContent = 'Crear reserva'; });
+});
+
+// ── Arrastrar una reserva para moverla de hora/cancha ──
+(function(){
+  var drag = null;
+  function minsToHHMM(mins){
+    var hh = String(Math.floor(mins/60)).padStart(2,'0');
+    return hh + ':' + String(mins%60).padStart(2,'0');
+  }
+  document.querySelectorAll('.block[data-mid]').forEach(function(bl){
+    if (!bl.dataset.mid) return;
+    bl.addEventListener('mousedown', function(e){
+      e.preventDefault();
+      drag = { bl: bl, startY: e.clientY, startX: e.clientX,
+               origBody: bl.parentElement, origTop: parseInt(bl.style.top),
+               moved: false };
+    });
+  });
+  document.addEventListener('mousemove', function(e){
+    if (!drag) return;
+    if (!drag.moved && Math.abs(e.clientY-drag.startY)+Math.abs(e.clientX-drag.startX) < 6) return;
+    drag.moved = true;
+    drag.bl.classList.add('dragging');
+    drag.bl.style.pointerEvents = 'none';
+    var under = document.elementFromPoint(e.clientX, e.clientY);
+    var body = under && under.closest ? under.closest('.court-body') : null;
+    if (body) {
+      if (drag.bl.parentElement !== body) body.appendChild(drag.bl);
+      var rect = body.getBoundingClientRect();
+      var mins = GRID_START + (e.clientY - rect.top) / PX_MIN;
+      mins = Math.round(mins/30)*30;
+      drag.curMins = mins;
+      drag.curBody = body;
+      drag.bl.style.top = ((mins - GRID_START) * PX_MIN) + 'px';
+    }
+  });
+  document.addEventListener('mouseup', function(e){
+    if (!drag) return;
+    var d = drag; drag = null;
+    d.bl.classList.remove('dragging');
+    d.bl.style.pointerEvents = '';
+    if (!d.moved || !d.curBody) return;
+    var court = d.curBody.dataset.court;
+    var hhmm = minsToHHMM(d.curMins);
+    if (!confirm('¿Mover esta reserva a ' + court + ' a las ' + hhmm + '?')) {
+      location.reload(); return;
+    }
+    toast('Moviendo reserva...');
+    var fd = new FormData();
+    fd.append('match_id', d.bl.dataset.mid);
+    fd.append('court', court);
+    fd.append('date', DAYISO);
+    fd.append('time', hhmm);
+    fd.append('duration', d.bl.dataset.dur || '90');
+    fetch('/api/panel/move', {method:'POST', body:fd})
+      .then(function(r){ return r.json(); })
+      .then(function(r2){
+        if (r2.ok) { toast('✅ Reserva movida'); setTimeout(function(){ location.reload(); }, 700); }
+        else { toast('😕 ' + (r2.error || 'No se pudo mover'), true);
+               setTimeout(function(){ location.reload(); }, 1800); }
+      })
+      .catch(function(){ toast('😕 Error de red', true);
+                         setTimeout(function(){ location.reload(); }, 1800); });
+  });
+})();
 document.getElementById('bm_cobro').addEventListener('change', function(){
   document.getElementById('bm_players_wrap').style.display =
     this.value === 'split' ? 'block' : 'none';
@@ -582,6 +687,42 @@ document.querySelectorAll('.court-body').forEach(function(body){
 });
 </script>
 </body></html>"""
+
+
+def config_html() -> str:
+    """⚙️ Configuración (solo superadmin): horarios, precios, monedero, teléfonos."""
+    try:
+        from api import settings as st
+        v = st.all_values()
+    except Exception as e:
+        logger.error(f"panel config: {e}")
+        return '<div class="empty">No se pudo cargar la configuración.</div>'
+
+    def inp(key, tipo="text", wide=False):
+        cls = ' class="wide"' if wide else ""
+        return (f'<label>{st.LABELS.get(key, key)}'
+                f'<input{cls} type="{tipo}" name="{key}" value="{_esc(v.get(key, ""))}"></label>')
+
+    return (
+        '<form class="configform" method="post" action="/api/panel/settings" '
+        'onsubmit="this.querySelector(\'button\').disabled=true">'
+        '<h3>⚙️ Configuración del club</h3>'
+        '<p class="hint">Estos valores los usa el bot de WhatsApp, la recepcionista '
+        'de voz y este panel. Los cambios aplican en ~1 minuto.</p>'
+        '<h4>🕐 Horarios (los usa el bot para ofrecer canchas)</h4>'
+        + inp("h_lv_abre", "time") + inp("h_lv_cierra", "time")
+        + inp("h_sab_abre", "time") + inp("h_sab_cierra", "time")
+        + inp("h_dom_abre", "time") + inp("h_dom_cierra", "time")
+        + '<h4>💲 Precios</h4>'
+        + inp("precio_respaldo", "number") + inp("precio_clase", "number")
+        + '<h4>💰 Monedero</h4>'
+        + inp("paquetes_monedero", "text", wide=True)
+        + '<h4>📱 Teléfonos de aviso</h4>'
+        + inp("tel_avisos") + inp("tel_clases")
+        + '<div style="margin-top:0.8rem"><button type="submit" class="savebtn">'
+          'Guardar configuración</button></div>'
+        '</form>'
+    )
 
 
 def usuarios_html() -> str:
@@ -650,6 +791,7 @@ async def render_panel(playtomic, date_str: str = None, user: dict = None) -> st
 
     is_super = bool(user and user.get("role") == "superadmin")
     nav_usuarios = ('<div class="nav-item" data-s="usuarios">👤 Usuarios</div>'
+                    '<div class="nav-item" data-s="config">⚙️ Configuración</div>'
                     if is_super else "")
     userchip = ""
     if user:
@@ -664,6 +806,7 @@ async def render_panel(playtomic, date_str: str = None, user: dict = None) -> st
         .replace("%NAV_USUARIOS%", nav_usuarios)
         .replace("%USERCHIP%", userchip)
         .replace("%USUARIOS%", usuarios_html() if is_super else "")
+        .replace("%CONFIG%", config_html() if is_super else "")
         .replace("%TENANT%", tenant)
         .replace("%PREV%", (day - timedelta(days=1)).isoformat())
         .replace("%NEXT%", (day + timedelta(days=1)).isoformat())

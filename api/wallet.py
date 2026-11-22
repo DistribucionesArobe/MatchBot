@@ -25,8 +25,12 @@ def _phone10(phone: str) -> str:
 
 
 def packages() -> list[dict]:
-    """Paquetes de recarga desde env WALLET_PACKAGES='1000:1300,2000:2300'."""
-    raw = os.getenv("WALLET_PACKAGES", "1000:1300,2000:2300")
+    """Paquetes de recarga (editables en /panel > Configuración)."""
+    try:
+        from api import settings as st
+        raw = st.get("paquetes_monedero")
+    except Exception:
+        raw = os.getenv("WALLET_PACKAGES", "1000:1300,2000:2300")
     out = []
     for part in raw.split(","):
         try:
