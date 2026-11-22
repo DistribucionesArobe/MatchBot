@@ -146,7 +146,8 @@ def calendar_html(courts: list[str], day_matches: list[dict], day: date_cls) -> 
             )
         cols += (
             f'<div class="court-col"><div class="court-head">{_esc(court)}</div>'
-            f'<div class="court-body" style="height:{height}px">{blocks}</div></div>'
+            f'<div class="court-body" data-court="{_esc(court)}" '
+            f'style="height:{height}px">{blocks}</div></div>'
         )
 
     legend = (
@@ -468,6 +469,14 @@ section.visible { display:block; }
 .userform { background:white; border:1px solid #e5e7eb; border-radius:12px; padding:1.2rem; margin-bottom:1rem; }
 .userform label { font-size:0.8rem; color:#374151; margin-right:0.8rem; }
 .userform input, .userform select { border:1px solid #d1d5db; border-radius:8px; padding:6px 8px; margin:2px 6px 8px 0; }
+.modal-bg { display:none; position:fixed; inset:0; background:rgba(17,24,39,.45); z-index:50; align-items:center; justify-content:center; }
+.modal { background:white; border-radius:16px; padding:1.6rem; width:330px; box-shadow:0 20px 50px rgba(0,0,0,.2); }
+.modal h3 { margin:0 0 0.2rem; }
+.modal-sub { color:#6b7280; font-size:0.85rem; margin:0 0 1rem; }
+.modal label { display:block; font-size:0.8rem; color:#374151; margin-bottom:0.7rem; }
+.modal input, .modal select { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:8px; margin-top:3px; box-sizing:border-box; }
+.modal-btns { display:flex; gap:8px; justify-content:flex-end; margin-top:0.8rem; }
+.cancelbtn { background:#f3f4f6; border:1px solid #d1d5db; border-radius:8px; padding:8px 14px; cursor:pointer; }
 </style></head><body>
 <div class="sidebar">
   <div class="brand">Match<span>Bot</span> Manager</div>
@@ -478,7 +487,6 @@ section.visible { display:block; }
   <div class="nav-item" data-s="pagos">💵 Pagos</div>
   <div class="nav-item" data-s="reportes">📊 Reportes</div>
   %NAV_USUARIOS%
-  <a class="nav-item" href="https://manager.playtomic.io/dashboard/academy?tid=%TENANT%" target="_blank">🎓 Academia ↗</a>
   <div class="userchip">%USERCHIP%</div>
 </div>
 <div class="main">
@@ -499,6 +507,34 @@ section.visible { display:block; }
   <section id="reportes">%REPORTES%</section>
   <section id="usuarios">%USUARIOS%</section>
 </div>
+
+<div id="bookmodal" class="modal-bg">
+  <form class="modal" method="post" action="/api/panel/book">
+    <h3>➕ Nueva reserva</h3>
+    <p class="modal-sub" id="bm_court_label"></p>
+    <input type="hidden" name="court" id="bm_court">
+    <input type="hidden" name="date" value="%DAYISO%">
+    <label>Hora de inicio<br><input type="time" name="time" id="bm_time" step="1800" required></label>
+    <label>Duración<br><select name="duration" id="bm_dur">
+      <option value="60">60 minutos</option>
+      <option value="90">90 minutos</option>
+      <option value="120">120 minutos</option>
+    </select></label>
+    <label>Nombre del cliente<br><input name="name" id="bm_name" required placeholder="Juan Pérez"></label>
+    <label>Teléfono (opcional, para avisos y sellos)<br><input name="phone" placeholder="8341234567"></label>
+    <label>Cobro<br><select name="cobro" id="bm_cobro">
+      <option value="single">Pago único (uno paga todo)</option>
+      <option value="split">Dividido entre jugadores</option>
+    </select></label>
+    <label id="bm_players_wrap" style="display:none">¿Entre cuántos se divide?<br>
+      <input type="number" name="players" id="bm_players" min="1" max="14" value="4"></label>
+    <div class="modal-btns">
+      <button type="button" class="cancelbtn" onclick="closeBookModal()">Cancelar</button>
+      <button type="submit" class="savebtn">Crear reserva</button>
+    </div>
+  </form>
+</div>
+
 <script>
 var titles = {calendario:'📅 Calendario', reservas:'📋 Reservas', clientes:'👥 Clientes',
               premios:'🎟️ Premios', pagos:'💵 Pagos', reportes:'📊 Reportes',
@@ -511,6 +547,37 @@ document.querySelectorAll('.nav-item[data-s]').forEach(function(it){
     document.querySelectorAll('section').forEach(function(sec){ sec.classList.remove('visible'); });
     document.getElementById(s).classList.add('visible');
     document.getElementById('title').textContent = titles[s];
+  });
+});
+
+// ── Crear reserva picando el calendario ──
+var PX_MIN = %PXMIN%, GRID_START = %GRIDSTART%;
+function closeBookModal(){ document.getElementById('bookmodal').style.display='none'; }
+document.getElementById('bookmodal').addEventListener('click', function(e){
+  if (e.target === this) closeBookModal();
+});
+document.getElementById('bm_cobro').addEventListener('change', function(){
+  document.getElementById('bm_players_wrap').style.display =
+    this.value === 'split' ? 'block' : 'none';
+});
+document.querySelectorAll('.court-body').forEach(function(body){
+  body.style.cursor = 'crosshair';
+  body.addEventListener('click', function(e){
+    if (e.target.closest('.block')) return;  // ya hay reserva ahí
+    var rect = body.getBoundingClientRect();
+    var mins = GRID_START + (e.clientY - rect.top) / PX_MIN;
+    mins = Math.round(mins / 30) * 30;
+    var hh = String(Math.floor(mins / 60)).padStart(2, '0');
+    var mm = String(mins % 60).padStart(2, '0');
+    var court = body.dataset.court || '';
+    var isFut = /f[uú]t?bol/i.test(court);
+    document.getElementById('bm_court').value = court;
+    document.getElementById('bm_court_label').textContent = '🎾 ' + court;
+    document.getElementById('bm_time').value = hh + ':' + mm;
+    document.getElementById('bm_dur').value = isFut ? '60' : '90';
+    document.getElementById('bm_players').value = isFut ? 7 : 4;
+    document.getElementById('bookmodal').style.display = 'flex';
+    document.getElementById('bm_name').focus();
   });
 });
 </script>
@@ -591,6 +658,9 @@ async def render_panel(playtomic, date_str: str = None, user: dict = None) -> st
                     f'<a href="/panel/logout">Salir</a>')
 
     html = (PAGE
+        .replace("%PXMIN%", str(PX_PER_MIN))
+        .replace("%GRIDSTART%", str(GRID_START_MIN))
+        .replace("%DAYISO%", day.isoformat())
         .replace("%NAV_USUARIOS%", nav_usuarios)
         .replace("%USERCHIP%", userchip)
         .replace("%USUARIOS%", usuarios_html() if is_super else "")

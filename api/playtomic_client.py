@@ -880,6 +880,8 @@ class PlaytomicClient:
         customer_phone: str = "",
         slot_price: float = 0.0,
         private_notes: str = None,
+        players: int = None,
+        payment_mode: str = "split",
     ) -> dict:
         """
         Create a booking on Playtomic as the club manager.
@@ -959,16 +961,31 @@ class PlaytomicClient:
         # the price (padel 300/4 = 75 MXN each; football price/14).
         # This mirrors staff-created Split bookings, which show each
         # player's share and open correctly in the Manager.
-        per_person = f"{int(slot_price / num_players)} MXN" if slot_price > 0 else None
+        # ¿Entre cuántos se divide el cobro? (default: todos los lugares)
+        split_count = num_players
+        if players and 1 <= int(players) <= num_players:
+            split_count = int(players)
+
         first_registration = {
             "merchant_player_id": player_merchant_id,
             "name": player_display_name,
         }
-        empty_registration = {}
-        if per_person:
-            first_registration["price"] = per_person
-            empty_registration = {"price": per_person}
-        registrations = [first_registration] + [dict(empty_registration) for _ in range(num_players - 1)]
+
+        if payment_mode == "single":
+            # Pago único: formato SINGLE_PAYER capturado del Manager
+            # (sin precios; el servidor autocalcula).
+            payment_type = "SINGLE_PAYER"
+            registrations = [first_registration] + [{} for _ in range(num_players - 1)]
+        else:
+            payment_type = "SPLIT"
+            per_person = (f"{int(slot_price / split_count)} MXN"
+                          if slot_price > 0 else None)
+            if per_person:
+                first_registration["price"] = per_person
+            paying = [dict({"price": per_person}) if per_person else {}
+                      for _ in range(split_count - 1)]
+            empty = [{} for _ in range(num_players - split_count)]
+            registrations = [first_registration] + paying + empty
 
         manager_payload = {
             "sport_id": sport_id,
@@ -985,9 +1002,9 @@ class PlaytomicClient:
             # historically breaks the Manager detail panel. Set explicitly.
             "owner_id": self.user_id,
             "registration_info": {
-                # SPLIT with per-person prices — like staff-created split
-                # bookings (each player pays their share).
-                "payment_type": "SPLIT",
+                # SPLIT con precios por persona (como las divididas del staff)
+                # o SINGLE_PAYER sin precios (pago único, autocalculado).
+                "payment_type": payment_type,
                 "registrations": registrations,
             },
         }

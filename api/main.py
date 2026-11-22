@@ -1259,6 +1259,93 @@ async def panel_logout():
     return resp
 
 
+@app.post("/api/panel/book")
+async def panel_create_booking(request: Request):
+    """Crear reserva desde el calendario del panel (staff o superadmin)."""
+    from api import auth, customers, loyalty
+    user = auth.current_user(request)
+    if not user:
+        return HTMLResponse("<h3>❌ Inicia sesión para crear reservas.</h3>"
+                            "<a href='/panel/login'>→ Iniciar sesión</a>", status_code=403)
+    form = await request.form()
+    court = (form.get("court") or "").strip()
+    date_str = (form.get("date") or "").strip()
+    time_str = (form.get("time") or "").strip()[:5]
+    name = (form.get("name") or "").strip()
+    phone = "".join(ch for ch in (form.get("phone") or "") if ch.isdigit())
+    cobro = form.get("cobro") or "single"
+    try:
+        duration = int(form.get("duration") or 90)
+        players = int(form.get("players") or 4)
+    except ValueError:
+        duration, players = 90, 4
+    back = f"<p><a href='/panel?date={date_str}'>← Volver al calendario</a></p>"
+    if not (court and date_str and time_str and name):
+        return HTMLResponse(f"<h3>❌ Faltan datos (cancha, fecha, hora o nombre).</h3>{back}",
+                            status_code=400)
+
+    # Nombre de cancha → resource_id
+    try:
+        await playtomic._ensure_resource_names()
+        resource_id = next((rid for rid, nm in playtomic._resource_names.items()
+                            if nm == court), None)
+    except Exception as e:
+        logger.error(f"panel book resource lookup: {e}")
+        resource_id = None
+    if not resource_id:
+        return HTMLResponse(f"<h3>❌ No encontré la cancha '{court}'.</h3>{back}",
+                            status_code=400)
+
+    # Hora local → UTC
+    offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        local_dt = _dt.fromisoformat(f"{date_str}T{time_str}:00")
+        utc_dt = local_dt - _td(hours=offset)
+        start_iso = utc_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return HTMLResponse(f"<h3>❌ Fecha u hora inválida.</h3>{back}", status_code=400)
+
+    price = 0.0
+    try:
+        price = await playtomic.calculate_price(resource_id, start_iso, duration) or 0.0
+    except Exception as e:
+        logger.error(f"panel book pricing: {e}")
+    if price <= 0:
+        price = float(os.getenv("FALLBACK_PRICE", "300"))
+
+    cobro_txt = ("PAGO ÚNICO" if cobro == "single"
+                 else f"DIVIDIDO entre {players} (${price/max(players,1):.0f} c/u)")
+    notes = f"🖥️ Creada desde el panel por {user.get('name') or user.get('sub')} — {cobro_txt}"
+
+    result = await playtomic.create_booking(
+        resource_id=resource_id, start_time=start_iso, duration=duration,
+        customer_name=name, customer_phone=phone, slot_price=price,
+        private_notes=notes, players=players, payment_mode=cobro)
+
+    if not result.get("success"):
+        err = "ese horario se acaba de ocupar" if result.get("error") == "slot_locked" \
+              else f"error técnico ({str(result.get('error'))[:120]})"
+        return HTMLResponse(f"<h3>😕 No se pudo crear la reserva: {err}.</h3>{back}",
+                            status_code=502)
+
+    # Cliente + sello si dio teléfono
+    if phone and len(phone) >= 10:
+        try:
+            full = phone if len(phone) > 10 else "52" + phone
+            customers.touch_booking(full, source="panel")
+            if not customers.registered_name(full):
+                customers.save_name(full, name.title(), source="panel")
+            loyalty.record_booking(full, result.get("match_id", ""), start_iso)
+        except Exception as e:
+            logger.error(f"panel book customer/loyalty: {e}")
+
+    detalle = (f"{court} · {date_str} {time_str} · {duration} min · "
+               f"${price:.0f} MXN · {cobro_txt.lower()}")
+    return HTMLResponse(f"<h3>✅ Reserva creada para <b>{name}</b></h3>"
+                        f"<p>{detalle}</p>{back}")
+
+
 @app.post("/api/panel/reset-admin")
 async def panel_reset_admin(request: Request):
     """Rescate: recrea el superadmin 'alejandro'. Requiere X-Voice-Key.
