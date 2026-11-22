@@ -579,6 +579,8 @@ section.visible { display:block; }
 .modal input, .modal select { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:8px; margin-top:3px; box-sizing:border-box; }
 .modal-btns { display:flex; gap:8px; justify-content:flex-end; margin-top:0.8rem; }
 .cancelbtn { background:#f3f4f6; border:1px solid #d1d5db; border-radius:8px; padding:8px 14px; cursor:pointer; }
+.dangerbtn { background:#dc2626; color:white; border:none; border-radius:8px; padding:8px 14px; cursor:pointer; }
+.dangerbtn:disabled { opacity:0.6; }
 .block[data-mid] { cursor:grab; }
 .block.dragging { opacity:0.75; box-shadow:0 10px 24px rgba(0,0,0,.3); z-index:30; cursor:grabbing; }
 .toast { position:fixed; bottom:22px; right:22px; background:#111827; color:white; padding:10px 16px;
@@ -648,8 +650,19 @@ section.visible { display:block; }
   </form>
 </div>
 
+<div id="detailmodal" class="modal-bg">
+  <div class="modal">
+    <h3 id="dm_name">Reserva</h3>
+    <p class="modal-sub" id="dm_info"></p>
+    <div class="modal-btns">
+      <button type="button" class="cancelbtn" onclick="closeDetail()">Cerrar</button>
+      <button type="button" class="dangerbtn" id="dm_cancel">🗑️ Cancelar reserva</button>
+    </div>
+  </div>
+</div>
+
 <script>
-var titles = {calendario:'📅 Calendario', reservas:'📋 Reservas', clientes:'👥 Clientes',
+var titles ={calendario:'📅 Calendario', reservas:'📋 Reservas', clientes:'👥 Clientes',
               premios:'🎟️ Premios', pagos:'💵 Pagos', reportes:'📊 Reportes',
               usuarios:'👤 Usuarios', config:'⚙️ Configuración'};
 document.querySelectorAll('.nav-item[data-s]').forEach(function(it){
@@ -697,6 +710,38 @@ document.querySelector('#bookmodal form').addEventListener('submit', function(e)
       btn.disabled = false; btn.textContent = 'Crear reserva'; });
 });
 
+// ── Detalle de reserva: clic para ver y cancelar ──
+function closeDetail(){ document.getElementById('detailmodal').style.display='none'; }
+document.getElementById('detailmodal').addEventListener('click', function(e){
+  if (e.target === this) closeDetail();
+});
+function openDetail(bl){
+  var name = (bl.querySelector('.bname')||{}).textContent || 'Reserva';
+  var time = (bl.querySelector('.btime')||{}).textContent || '';
+  var court = (bl.parentElement.dataset||{}).court || '';
+  document.getElementById('dm_name').textContent = '🎾 ' + name;
+  document.getElementById('dm_info').textContent = court + ' · ' + time +
+    ' — arrastra el cuadro para cambiar hora o cancha';
+  var btn = document.getElementById('dm_cancel');
+  btn.disabled = false; btn.textContent = '🗑️ Cancelar reserva';
+  btn.onclick = function(){
+    if (!confirm('¿Cancelar la reserva de ' + name + ' (' + time + ')? Esto no se puede deshacer.')) return;
+    btn.disabled = true; btn.textContent = 'Cancelando...';
+    var fd = new FormData();
+    fd.append('match_id', bl.dataset.mid);
+    fetch('/api/panel/cancel', {method:'POST', body:fd})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.ok) { toast('✅ Reserva cancelada'); setTimeout(function(){ location.reload(); }, 2000); }
+        else { toast('😕 ' + (d.error || 'No se pudo cancelar'), true);
+               btn.disabled = false; btn.textContent = '🗑️ Cancelar reserva'; }
+      })
+      .catch(function(){ toast('😕 Error de red', true);
+        btn.disabled = false; btn.textContent = '🗑️ Cancelar reserva'; });
+  };
+  document.getElementById('detailmodal').style.display = 'flex';
+}
+
 // ── Arrastrar una reserva para moverla de hora/cancha ──
 (function(){
   var drag = null;
@@ -736,7 +781,8 @@ document.querySelector('#bookmodal form').addEventListener('submit', function(e)
     var d = drag; drag = null;
     d.bl.classList.remove('dragging');
     d.bl.style.pointerEvents = '';
-    if (!d.moved || !d.curBody) return;
+    if (!d.moved) { openDetail(d.bl); return; }
+    if (!d.curBody) return;
     var court = d.curBody.dataset.court;
     var hhmm = minsToHHMM(d.curMins);
     if (!confirm('¿Mover esta reserva a ' + court + ' a las ' + hhmm + '?')) {

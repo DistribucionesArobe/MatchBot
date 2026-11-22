@@ -1385,6 +1385,29 @@ async def panel_create_booking(request: Request, ajax: int = Query(0)):
                         f"<p>{detalle}</p>{back}")
 
 
+@app.post("/api/panel/cancel")
+async def panel_cancel_booking(request: Request):
+    """Cancelar una reserva desde el panel (clic en el cuadro → Cancelar)."""
+    from api import auth, loyalty
+    user = auth.current_user(request)
+    if not user:
+        return {"ok": False, "error": "Sesión expirada, vuelve a entrar"}
+    form = await request.form()
+    match_id = (form.get("match_id") or "").strip()
+    if not match_id:
+        return {"ok": False, "error": "Falta la reserva"}
+    result = await playtomic.cancel_match(match_id)
+    if result.get("error") or not result.get("success"):
+        return {"ok": False,
+                "error": f"No se pudo cancelar ({str(result.get('error') or result)[:120]})"}
+    try:
+        loyalty.mark_cancelled(match_id)
+    except Exception as e:
+        logger.error(f"panel cancel loyalty: {e}")
+    logger.info(f"Panel: reserva {match_id} cancelada por {user.get('sub')}")
+    return {"ok": True}
+
+
 @app.post("/api/panel/move")
 async def panel_move_booking(request: Request):
     """Mover una reserva (drag & drop): crea en el nuevo lugar y cancela la vieja."""
