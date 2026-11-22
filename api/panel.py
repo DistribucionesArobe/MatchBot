@@ -283,7 +283,6 @@ def monederos_html() -> str:
         f'<div style="margin:8px 0">{pack_btns}</div>'
         '<label>Pagó $<input id="w_paid" name="paid" type="number" step="1" required></label> '
         '<label>Abonar $<input id="w_credit" name="credit" type="number" step="1" required></label> '
-        '<label>Clave staff<input name="key" type="password" required></label> '
         '<button type="submit" class="savebtn">Abonar saldo</button>'
         '</form><p class="hint">Al abonar, el cliente recibe aviso por WhatsApp y sus '
         'reservas se pagan solas con su saldo.</p></div>'
@@ -464,6 +463,11 @@ section.visible { display:block; }
 .hint { color:#6b7280; font-size:0.75rem; margin:0.5rem 0 0; }
 .hint { font-size:0.75rem; color:#6b7280; margin-top:0.75rem; }
 .hint a { color:#059669; }
+.userchip { margin-top:auto; padding:0.8rem 1rem; font-size:0.75rem; color:#9ca3af; border-top:1px solid #1f2937; }
+.userchip a { color:#f87171; text-decoration:none; margin-left:6px; }
+.userform { background:white; border:1px solid #e5e7eb; border-radius:12px; padding:1.2rem; margin-bottom:1rem; }
+.userform label { font-size:0.8rem; color:#374151; margin-right:0.8rem; }
+.userform input, .userform select { border:1px solid #d1d5db; border-radius:8px; padding:6px 8px; margin:2px 6px 8px 0; }
 </style></head><body>
 <div class="sidebar">
   <div class="brand">Match<span>Bot</span> Manager</div>
@@ -473,7 +477,9 @@ section.visible { display:block; }
   <div class="nav-item" data-s="premios">🎟️ Premios</div>
   <div class="nav-item" data-s="pagos">💵 Pagos</div>
   <div class="nav-item" data-s="reportes">📊 Reportes</div>
+  %NAV_USUARIOS%
   <a class="nav-item" href="https://manager.playtomic.io/dashboard/academy?tid=%TENANT%" target="_blank">🎓 Academia ↗</a>
+  <div class="userchip">%USERCHIP%</div>
 </div>
 <div class="main">
   <div class="topbar">
@@ -491,10 +497,12 @@ section.visible { display:block; }
   <section id="premios">%PREMIOS%</section>
   <section id="pagos">%PAGOS%</section>
   <section id="reportes">%REPORTES%</section>
+  <section id="usuarios">%USUARIOS%</section>
 </div>
 <script>
 var titles = {calendario:'📅 Calendario', reservas:'📋 Reservas', clientes:'👥 Clientes',
-              premios:'🎟️ Premios', pagos:'💵 Pagos', reportes:'📊 Reportes'};
+              premios:'🎟️ Premios', pagos:'💵 Pagos', reportes:'📊 Reportes',
+              usuarios:'👤 Usuarios'};
 document.querySelectorAll('.nav-item[data-s]').forEach(function(it){
   it.addEventListener('click', function(){
     document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
@@ -509,7 +517,39 @@ document.querySelectorAll('.nav-item[data-s]').forEach(function(it){
 </body></html>"""
 
 
-async def render_panel(playtomic, date_str: str = None) -> str:
+def usuarios_html() -> str:
+    """Sección Usuarios (solo superadmin): crear staff y ver cuentas."""
+    try:
+        from api import auth
+        users = auth.list_users()
+    except Exception as e:
+        logger.error(f"panel usuarios: {e}")
+        users = []
+    form = (
+        '<div class="userform"><h3>➕ Crear o actualizar usuario</h3>'
+        '<form method="post" action="/api/panel/users">'
+        '<label>Usuario<input name="username" required placeholder="caro"></label>'
+        '<label>Nombre<input name="name" required placeholder="Caro García"></label>'
+        '<label>Contraseña<input name="password" type="password" required></label>'
+        '<label>Rol<select name="role">'
+        '<option value="staff">Staff (ver + recargas)</option>'
+        '<option value="superadmin">Super admin</option></select></label> '
+        '<button type="submit" class="savebtn">Guardar</button>'
+        '</form><p class="hint">Si el usuario ya existe, se actualiza su contraseña y rol. '
+        'Para desactivar: agrega ?off=usuario a /api/panel/users</p></div>'
+    )
+    rows = "".join(
+        f'<tr><td><b>{_esc(u["name"] or u["username"])}</b></td>'
+        f'<td>{_esc(u["username"])}</td>'
+        f'<td>{"👑 Super admin" if u["role"] == "superadmin" else "👔 Staff"}</td>'
+        f'<td>{"✅ Activo" if u["active"] else "⛔ Inactivo"}</td></tr>'
+        for u in users)
+    tabla = ('<table class="tbl"><tr><th>Nombre</th><th>Usuario</th>'
+             '<th>Rol</th><th>Estado</th></tr>' + rows + '</table>') if users else ''
+    return form + tabla
+
+
+async def render_panel(playtomic, date_str: str = None, user: dict = None) -> str:
     now_local = _local(datetime.utcnow())
     try:
         day = date_cls.fromisoformat(date_str) if date_str else now_local.date()
@@ -541,7 +581,19 @@ async def render_panel(playtomic, date_str: str = None) -> str:
     if day == now_local.date():
         label = "Hoy · " + label
 
+    is_super = bool(user and user.get("role") == "superadmin")
+    nav_usuarios = ('<div class="nav-item" data-s="usuarios">👤 Usuarios</div>'
+                    if is_super else "")
+    userchip = ""
+    if user:
+        rol = "👑" if is_super else "👔"
+        userchip = (f'{rol} {_esc(user.get("name") or user.get("sub") or "")} '
+                    f'<a href="/panel/logout">Salir</a>')
+
     html = (PAGE
+        .replace("%NAV_USUARIOS%", nav_usuarios)
+        .replace("%USERCHIP%", userchip)
+        .replace("%USUARIOS%", usuarios_html() if is_super else "")
         .replace("%TENANT%", tenant)
         .replace("%PREV%", (day - timedelta(days=1)).isoformat())
         .replace("%NEXT%", (day + timedelta(days=1)).isoformat())

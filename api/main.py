@@ -81,6 +81,10 @@ async def startup():
         from api import wallet
         wallet.ensure_tables()
         logger.info("💰 Wallet tables ready")
+        from api import auth
+        auth.ensure_table()
+        auth.bootstrap_superadmin()
+        logger.info("🔐 Panel auth ready")
     except Exception as e:
         logger.warning(f"Loyalty tables init failed: {e}")
     asyncio.create_task(_loyalty_loop())
@@ -311,13 +315,17 @@ async def api_wallet_recarga(request: Request):
     """Registrar recarga de monedero desde /panel (form). Requiere clave staff."""
     from fastapi.responses import HTMLResponse
     from api import wallet, customers
+    from api import auth
     form = await request.form()
-    key = (form.get("key") or "").strip()
-    staff_key = os.getenv("STAFF_KEY", "") or os.getenv("VOICE_API_KEY", "")
-    if not staff_key or key != staff_key:
-        return HTMLResponse(
-            "<h3>❌ Clave de staff incorrecta.</h3><a href='/panel'>← Volver al panel</a>",
-            status_code=403)
+    user = auth.current_user(request)
+    if not user:
+        # Fallback para uso por API (curl): clave staff
+        key = (form.get("key") or "").strip()
+        staff_key = os.getenv("STAFF_KEY", "") or os.getenv("VOICE_API_KEY", "")
+        if not staff_key or key != staff_key:
+            return HTMLResponse(
+                "<h3>❌ Inicia sesión en el panel para registrar recargas.</h3>"
+                "<a href='/panel/login'>→ Iniciar sesión</a>", status_code=403)
     phone = (form.get("phone") or "").strip()
     try:
         paid = float(form.get("paid") or 0)
@@ -332,7 +340,7 @@ async def api_wallet_recarga(request: Request):
 
     new_balance = wallet.credit(p10, credited, paid,
                                 concept=f"Recarga (pagó ${paid:.0f})",
-                                created_by="panel")
+                                created_by=(user or {}).get("sub", "api"))
 
     # Avisar al cliente por WhatsApp
     try:
@@ -1210,10 +1218,71 @@ async def api_playtomic_debug(date: str = Query(None)):
 # ─────────────────────────────────────────────────────
 
 @app.get("/panel", response_class=HTMLResponse)
-async def admin_panel(date: str = Query(None)):
-    """Panel de administración estilo Playtomic Manager."""
+async def admin_panel(request: Request, date: str = Query(None)):
+    """Panel de administración estilo Playtomic Manager (requiere login)."""
+    from fastapi.responses import RedirectResponse
+    from api import auth
+    user = auth.current_user(request)
+    if not user:
+        return RedirectResponse("/panel/login", status_code=302)
     from api.panel import render_panel
-    return HTMLResponse(await render_panel(playtomic, date))
+    return HTMLResponse(await render_panel(playtomic, date, user=user))
+
+
+@app.get("/panel/login", response_class=HTMLResponse)
+async def panel_login_page():
+    from api import auth
+    return HTMLResponse(auth.login_page())
+
+
+@app.post("/panel/login")
+async def panel_login(request: Request):
+    from fastapi.responses import RedirectResponse
+    from api import auth
+    form = await request.form()
+    user = auth.login(form.get("username", ""), form.get("password", ""))
+    if not user:
+        return HTMLResponse(auth.login_page("Usuario o contraseña incorrectos."),
+                            status_code=401)
+    resp = RedirectResponse("/panel", status_code=302)
+    resp.set_cookie(auth.COOKIE, auth.make_token(user), httponly=True,
+                    max_age=auth.SESSION_HOURS * 3600, samesite="lax")
+    return resp
+
+
+@app.get("/panel/logout")
+async def panel_logout():
+    from fastapi.responses import RedirectResponse
+    from api import auth
+    resp = RedirectResponse("/panel/login", status_code=302)
+    resp.delete_cookie(auth.COOKIE)
+    return resp
+
+
+@app.post("/api/panel/users")
+async def panel_create_user(request: Request):
+    """Crear/actualizar usuario del panel (solo superadmin). ?off=usuario desactiva."""
+    from api import auth
+    user = auth.current_user(request)
+    if not user or user.get("role") != "superadmin":
+        return HTMLResponse("<h3>❌ Solo el super admin puede administrar usuarios.</h3>"
+                            "<a href='/panel'>← Volver</a>", status_code=403)
+    off = request.query_params.get("off", "")
+    if off:
+        auth.set_active(off, False)
+        return HTMLResponse(f"<h3>✅ Usuario '{off}' desactivado.</h3>"
+                            f"<a href='/panel'>← Volver al panel</a>")
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    password = form.get("password") or ""
+    name = (form.get("name") or "").strip()
+    role = form.get("role") or "staff"
+    if not username or len(password) < 6:
+        return HTMLResponse("<h3>❌ Usuario requerido y contraseña de mínimo 6 caracteres.</h3>"
+                            "<a href='/panel'>← Volver</a>", status_code=400)
+    auth.create_user(username, password, name, role)
+    return HTMLResponse(f"<h3>✅ Usuario '{username}' guardado ({role}).</h3>"
+                        f"<a href='/panel'>← Volver al panel</a>")
 
 
 @app.get("/reservas", response_class=HTMLResponse)
