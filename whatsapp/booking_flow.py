@@ -323,10 +323,14 @@ async def _handle_reg_birthday(phone_id, token, to, club_id, text, data):
             "No te entendí 😅 Escríbelo como *día/mes* (ejemplo *15/05*), o escribe *no*.")
 
 
-def _guests_prompt() -> str:
+def _guests_prompt(match_id: str = "") -> str:
+    base = os.getenv("PUBLIC_BASE_URL", "https://matchbot.live")
+    link = (f"\n\n🔗 O más fácil: *reenvíales este link* y que se registren "
+            f"solos:\n{base}/j/{match_id}" if match_id else "")
     return ("👥 *¿Quiénes juegan contigo?*\n\n"
             "Mándame sus *contactos de WhatsApp* (📎 → Contacto) "
-            "o escríbelos así: *Juan Pérez 8341234567* — uno por mensaje.\n\n"
+            "o escríbelos así: *Juan Pérez 8341234567* — uno por mensaje."
+            f"{link}\n\n"
             "Así también acumulan sellos 🎟️. Escribe *listo* cuando termines "
             "(o *no* si juegas solo).")
 
@@ -335,7 +339,8 @@ async def _finish_reg_then_guests(phone_id, token, to, club_id, data, prefix):
     """Tras el registro, si venimos de una reserva, pedir a los compañeros."""
     if data.get("guest_match") is not None:
         _set_state(club_id, to, "adding_guests", data)
-        await send_text(phone_id, token, to, f"{prefix}\n\n{_guests_prompt()}")
+        await send_text(phone_id, token, to,
+                        f"{prefix}\n\n{_guests_prompt(data.get('guest_match', ''))}")
     else:
         _set_state(club_id, to, "idle", {})
         await send_text(phone_id, token, to, f"{prefix} Nos vemos en la cancha 🎾")
@@ -1077,7 +1082,8 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                             "¿cuál es tu *nombre completo*?")
                     else:
                         _set_state(club_id, to, "adding_guests", chain)
-                        await send_text(phone_id, token, to, _guests_prompt())
+                        await send_text(phone_id, token, to,
+                                        _guests_prompt(chain["guest_match"]))
                 except Exception as e:
                     logger.error(f"customers registration prompt failed: {e}")
 

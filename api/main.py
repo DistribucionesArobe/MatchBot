@@ -1403,6 +1403,92 @@ async def panel_create_booking(request: Request, ajax: int = Query(0)):
 BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://matchbot.live")
 
 
+def _game_info(match_id: str) -> dict | None:
+    """Datos del partido desde el espejo local (para la página de invitados)."""
+    row = execute("SELECT * FROM bookings_mirror WHERE match_id=%s",
+                  [match_id], fetch_one=True)
+    return dict(row) if row else None
+
+
+def _game_page(match_id: str, msg: str = "", ok: bool = True) -> str:
+    from api import tournaments, customers
+    g = _game_info(match_id)
+    if not g:
+        return tournaments._pub_page("Partido",
+            '<div class="err">No encontré ese partido. Pide el link de nuevo.</div>')
+    try:
+        from datetime import timedelta as _td
+        offset = int(os.getenv("CLUB_UTC_OFFSET", "-6"))
+        local = g["start_utc"] + _td(hours=offset) if g.get("start_utc") else None
+        DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        cuando = (f"{DIAS[local.weekday()]} {local.day} a las "
+                  f"{local.strftime('%H:%M')}") if local else ""
+    except Exception:
+        cuando = ""
+    quien = (g.get("customer_name") or "Tu amigo").split("(")[0].strip()
+    aviso = f'<div class="{"ok" if ok else "err"}">{tournaments._esc(msg)}</div>' if msg else ""
+    guests = execute("SELECT name FROM booking_guests WHERE match_id=%s ORDER BY id",
+                     [match_id], fetch_all=True) or []
+    lista = "".join(f"<li>{tournaments._esc(x['name'])}</li>" for x in guests)
+    cancelado = "CANCEL" in str(g.get("status") or "").upper()
+    form = "" if cancelado else f"""
+      <div class="card"><h2 style="margin-top:0">📝 Apúntate</h2>
+      <form method="post" action="/j/{match_id}">
+        <label>Tu nombre<input name="name" required placeholder="Juan Pérez"></label>
+        <label>Tu celular (WhatsApp)<input name="phone" required
+          pattern="[0-9 ]{{10,13}}" placeholder="8341234567"></label>
+        <button class="go" type="submit">¡Voy a jugar! 🎾</button>
+      </form></div>"""
+    estado = '<div class="err">⚠️ Este partido fue cancelado.</div>' if cancelado else ""
+    body = (f"<h2>🎾 ¡{tournaments._esc(quien)} te invitó a jugar!</h2>"
+            f"<p><span class='pill'>📅 {cuando}</span> "
+            f"<span class='pill'>🏟️ {tournaments._esc(g.get('court') or '')}</span></p>"
+            f"{estado}{aviso}{form}"
+            f"<h2>Ya se apuntaron</h2><ol>{lista or '<i>Nadie aún — sé el primero</i>'}</ol>"
+            f"<p class='hint' style='color:#6b7280;font-size:0.78rem'>Al apuntarte "
+            f"entras al club de clientes y acumulas sellos 🎟️ para canchas gratis.</p>")
+    return tournaments._pub_page("Te invitaron a jugar", body)
+
+
+@app.get("/j/{match_id}", response_class=HTMLResponse)
+async def game_invite_view(match_id: str):
+    """Página pública: invitación a un partido (link que reenvía el que reservó)."""
+    return HTMLResponse(_game_page(match_id))
+
+
+@app.post("/j/{match_id}", response_class=HTMLResponse)
+async def game_invite_join(request: Request, match_id: str):
+    from api import customers
+    g = _game_info(match_id)
+    if not g:
+        return HTMLResponse(_game_page(match_id), status_code=404)
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    phone = form.get("phone") or ""
+    p10 = "".join(c for c in phone if c.isdigit())[-10:]
+    dup = execute("SELECT 1 FROM booking_guests WHERE match_id=%s AND phone10=%s",
+                  [match_id, p10], fetch_one=True)
+    if dup:
+        return HTMLResponse(_game_page(match_id, "Ya estabas apuntado 😉", True))
+    okk = customers.add_guest(match_id, name, phone, g.get("phone10") or "")
+    if not okk:
+        return HTMLResponse(_game_page(match_id,
+            "Revisa tu nombre y celular (10 dígitos).", False))
+    # Avisar al que reservó
+    try:
+        from api.promos import send_alert
+        phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+        token = os.getenv("WHATSAPP_TOKEN", "")
+        bp = g.get("phone10") or ""
+        if phone_id and token and len(bp) == 10:
+            await send_alert(phone_id, token, "52" + bp,
+                f"🎾 *{name}* ya se apuntó a tu partido. ¡Equipo armado!")
+    except Exception as e:
+        logger.error(f"game join notify: {e}")
+    return HTMLResponse(_game_page(match_id,
+        f"✅ ¡Listo, {name}! Quedaste apuntado. Nos vemos en la cancha.", True))
+
+
 @app.get("/torneos", response_class=HTMLResponse)
 async def public_tournaments():
     """Página pública: torneos abiertos + crear el tuyo."""
