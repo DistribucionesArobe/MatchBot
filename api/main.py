@@ -1247,6 +1247,13 @@ async def api_playtomic_debug(date: str = Query(None)):
 # Health check
 # ─────────────────────────────────────────────────────
 
+@app.get("/")
+async def root_redirect():
+    """matchbot.live → panel de administración."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/panel", status_code=302)
+
+
 @app.get("/panel", response_class=HTMLResponse)
 async def admin_panel(request: Request, date: str = Query(None)):
     """Panel de administración estilo Playtomic Manager (requiere login)."""
