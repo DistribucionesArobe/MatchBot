@@ -1111,6 +1111,12 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                         f"\n¡Nos vemos en la cancha! 🎾"
                     )
                 else:
+                    share_block = ""
+                    try:
+                        if match_id:
+                            share_block = "\n\n" + _share_link_msg(match_id)
+                    except Exception as e:
+                        logger.error(f"share link build failed: {e}")
                     confirmation_msg = (
                         f"✅ *¡Reserva confirmada!*\n\n"
                         f"📅 {date_label}\n"
@@ -1119,7 +1125,8 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                         f"{price_line}\n\n"
                         f"{pay_line}\n"
                         f"{stamps_line}"
-                        f"\n¡Nos vemos en la cancha! 🎾"
+                        f"{share_block}"
+                        f"\n\n¡Nos vemos en la cancha! 🎾"
                     )
             elif result.get("error") == "slot_locked":
                 logger.warning("Playtomic booking: slot locked by someone else")
@@ -1156,8 +1163,6 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                             "¿cuál es tu *nombre completo*?")
                     else:
                         _set_state(club_id, to, "adding_guests", chain)
-                        await send_text(phone_id, token, to,
-                                        _share_link_msg(chain["guest_match"]))
                 except Exception as e:
                     logger.error(f"customers registration prompt failed: {e}")
 
