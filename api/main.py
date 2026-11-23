@@ -1395,6 +1395,213 @@ async def panel_create_booking(request: Request, ajax: int = Query(0)):
                         f"<p>{detalle}</p>{back}")
 
 
+BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://matchbot.live")
+
+
+@app.get("/torneos", response_class=HTMLResponse)
+async def public_tournaments():
+    """Página pública: torneos abiertos + crear el tuyo."""
+    from api import tournaments
+    return HTMLResponse(tournaments.render_public_list())
+
+
+@app.post("/torneos/crear")
+async def public_tournament_create(request: Request):
+    from api import tournaments
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    owner_name = (form.get("owner_name") or "").strip()
+    owner_phone = form.get("owner_phone") or ""
+    try:
+        cuota = float(form.get("cuota") or 0)
+        maxp = int(form.get("max_players") or 16)
+    except ValueError:
+        cuota, maxp = 0, 16
+    if len(name) < 3 or len(owner_name) < 3:
+        return HTMLResponse("<h3>Faltan datos.</h3><a href='/torneos'>← Volver</a>",
+                            status_code=400)
+    res = tournaments.create_public(name, form.get("sport") or "padel",
+                                    form.get("fmt") or "grupos",
+                                    owner_name, owner_phone, maxp, cuota)
+    tid, key = res["id"], res["admin_key"]
+    pub = f"{BASE_URL}/t/{tid}"
+    adm = f"{BASE_URL}/t/{tid}/admin?key={key}"
+
+    # WhatsApp al organizador con sus links + aviso al club
+    try:
+        from api.promos import send_alert
+        phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+        token = os.getenv("WHATSAPP_TOKEN", "")
+        p10 = "".join(c for c in owner_phone if c.isdigit())[-10:]
+        if phone_id and token and len(p10) == 10:
+            await send_alert(phone_id, token, "52" + p10,
+                f"🏆 ¡Tu torneo *{name}* está creado!\n\n"
+                f"📣 Link para que se inscriban (compártelo):\n{pub}\n\n"
+                f"🔑 Tu link de organizador (NO lo compartas):\n{adm}\n\n"
+                f"Cuando tengas a todos, entra a tu link de organizador y "
+                f"pica *Cerrar inscripciones y sortear*. 🎾")
+        from api import settings as st
+        await send_alert(phone_id, token, st.get("tel_avisos"),
+            f"🏆 Nuevo torneo público creado por {owner_name}: *{name}* "
+            f"(cupo {maxp}). {pub}")
+    except Exception as e:
+        logger.error(f"tournament create notify: {e}")
+
+    return HTMLResponse(tournaments._pub_page("Torneo creado", f"""
+      <div class="ok"><b>🎉 ¡Tu torneo "{tournaments._esc(name)}" está creado!</b><br>
+      Te mandamos los links por WhatsApp. Guárdalos:</div>
+      <h2>📣 Link para inscribirse (compártelo)</h2>
+      <div class="linkbox">{pub}</div>
+      <h2>🔑 Tu link de organizador (privado)</h2>
+      <div class="linkbox">{adm}</div>
+      <p><a href="{pub}">Ver mi torneo →</a></p>"""))
+
+
+@app.get("/t/{tid}", response_class=HTMLResponse)
+async def public_tournament_view(tid: int):
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not t or not t.get("is_public"):
+        return HTMLResponse("<h3>Torneo no encontrado.</h3>", status_code=404)
+    return HTMLResponse(tournaments.render_public_tournament(t))
+
+
+@app.post("/t/{tid}/inscribir")
+async def public_tournament_join(request: Request, tid: int):
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not t or not t.get("is_public"):
+        return HTMLResponse("<h3>Torneo no encontrado.</h3>", status_code=404)
+    form = await request.form()
+    r = tournaments.inscribir(tid, form.get("name") or "", form.get("phone") or "")
+    t = tournaments.get(tid)
+    if r.get("ok"):
+        msg = (f"✅ ¡Inscrito! Eres el lugar {r['pos']} de {r['cupo']}. "
+               f"El organizador avisará cuando empiece.")
+        # Avisar al organizador cada inscripción
+        try:
+            from api.promos import send_alert
+            phone_id = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+            token = os.getenv("WHATSAPP_TOKEN", "")
+            op = t.get("owner_phone10") or ""
+            if phone_id and token and len(op) == 10:
+                await send_alert(phone_id, token, "52" + op,
+                    f"🏆 *{t['name']}*: se inscribió "
+                    f"{(form.get('name') or '').strip()} "
+                    f"({r['pos']}/{r['cupo']}).")
+        except Exception as e:
+            logger.error(f"inscribir notify: {e}")
+    else:
+        msg = f"😕 {r.get('error')}"
+    return HTMLResponse(tournaments.render_public_tournament(t, msg, r.get("ok", False)))
+
+
+def _org_ok(t, request) -> bool:
+    key = request.query_params.get("key", "")
+    return bool(t and t.get("admin_key") and key == t["admin_key"])
+
+
+@app.get("/t/{tid}/admin", response_class=HTMLResponse)
+async def public_tournament_admin(request: Request, tid: int):
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not t:
+        return HTMLResponse("<h3>Torneo no encontrado.</h3>", status_code=404)
+    if not _org_ok(t, request):
+        return HTMLResponse("<h3>🔒 Link de organizador inválido.</h3>", status_code=403)
+    key = t["admin_key"]
+    if t["status"] == "inscripcion":
+        data = t["data"]
+        filas = "".join(
+            f'<li>{tournaments._esc(i["name"])} '
+            f'<form method="post" style="display:inline" '
+            f'action="/t/{tid}/quitar?key={key}&i={ix}">'
+            f'<button style="border:none;background:none;color:#b02a2a;'
+            f'cursor:pointer">✖ quitar</button></form></li>'
+            for ix, i in enumerate(data.get("inscritos", [])))
+        n = len(data.get("inscritos", []))
+        body = f"""
+        <h2>🔑 Organizador: {tournaments._esc(t["name"])}</h2>
+        <div class="card"><b>📣 Link de inscripción (compártelo):</b>
+        <div class="linkbox">{BASE_URL}/t/{tid}</div></div>
+        <h2>Inscritos ({n}/{t.get("max_players")})</h2><ol>{filas or "<i>Nadie aún</i>"}</ol>
+        <form method="post" action="/t/{tid}/cerrar?key={key}"
+          onsubmit="return confirm('¿Cerrar inscripciones y sortear los grupos? Ya no podrán entrar más.')">
+          <button class="go" {"disabled" if n < 3 else ""}>⚔️ Cerrar inscripciones y sortear
+          {"(mínimo 3)" if n < 3 else ""}</button></form>"""
+        return HTMLResponse(tournaments._pub_page("Organizador", body))
+    # En juego: panel del organizador con captura (misma vista que el club)
+    top = (f'<span class="badge">🔑 Modo organizador</span> '
+           f'<a class="back" href="/t/{tid}">ver vista pública</a>')
+    return HTMLResponse(tournaments.render_detail(
+        t, base=f"/t/{tid}", qs=f"?key={key}", extra_top=top))
+
+
+@app.post("/t/{tid}/quitar")
+async def public_tournament_remove(request: Request, tid: int, i: int = Query(0)):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not _org_ok(t, request):
+        return HTMLResponse("🔒", status_code=403)
+    tournaments.quitar_inscrito(tid, i)
+    return RedirectResponse(f"/t/{tid}/admin?key={t['admin_key']}", status_code=302)
+
+
+@app.post("/t/{tid}/cerrar")
+async def public_tournament_close(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not _org_ok(t, request):
+        return HTMLResponse("🔒", status_code=403)
+    tournaments.cerrar_y_sortear(tid)
+    return RedirectResponse(f"/t/{tid}/admin?key={t['admin_key']}", status_code=302)
+
+
+@app.post("/t/{tid}/score")
+async def public_tournament_score(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not _org_ok(t, request):
+        return HTMLResponse("🔒", status_code=403)
+    form = await request.form()
+    try:
+        tournaments.set_score(tid, int(form.get("g")), int(form.get("f")),
+                              int(form.get("sa")), int(form.get("sb")))
+    except (TypeError, ValueError):
+        pass
+    return RedirectResponse(f"/t/{tid}/admin?key={t['admin_key']}", status_code=302)
+
+
+@app.post("/t/{tid}/bracket")
+async def public_tournament_bracket(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not _org_ok(t, request):
+        return HTMLResponse("🔒", status_code=403)
+    tournaments.gen_bracket(tid)
+    return RedirectResponse(f"/t/{tid}/admin?key={t['admin_key']}", status_code=302)
+
+
+@app.post("/t/{tid}/winner")
+async def public_tournament_winner(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    t = tournaments.get(tid)
+    if not _org_ok(t, request):
+        return HTMLResponse("🔒", status_code=403)
+    form = await request.form()
+    try:
+        tournaments.set_winner(tid, int(form.get("r")), int(form.get("m")),
+                               int(form.get("w")))
+    except (TypeError, ValueError):
+        pass
+    return RedirectResponse(f"/t/{tid}/admin?key={t['admin_key']}", status_code=302)
+
+
 def _panel_user_or_none(request):
     from api import auth
     return auth.current_user(request)

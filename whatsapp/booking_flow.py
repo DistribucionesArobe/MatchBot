@@ -189,6 +189,16 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
                 "Puedes seguir usando el bot para reservar normalmente.")
             return
 
+        # ── TORNEOS Y LIGAS ──
+        if text_lower in ("torneo", "torneos", "liga", "ligas", "crear torneo"):
+            await send_text(phone_id, token, wa_phone,
+                "🏆 *Torneos y ligas del club*\n\n"
+                "Mira los torneos abiertos, inscríbete, o crea el tuyo "
+                "y compártelo con tus amigos:\n\n"
+                "👉 https://matchbot.live/torneos\n\n"
+                "Tú organizas, nosotros ponemos las canchas. 🎾")
+            return
+
         # ── DATOS DE CLIENTE ──
         if text_lower in ("mis datos", "datos", "mi perfil", "perfil", "mi registro"):
             try:

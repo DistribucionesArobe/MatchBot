@@ -34,6 +34,13 @@ def ensure_table():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    for col in ("owner_phone10 TEXT", "owner_name TEXT", "admin_key TEXT",
+                "is_public BOOLEAN DEFAULT FALSE", "max_players INT DEFAULT 16",
+                "cuota NUMERIC(10,2) DEFAULT 0"):
+        try:
+            execute(f"ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS {col}")
+        except Exception as e:
+            logger.warning(f"tournaments alter: {e}")
 
 
 def _round_robin(teams: list) -> list:
@@ -56,11 +63,10 @@ def _round_robin(teams: list) -> list:
     return rounds
 
 
-def create(name: str, sport: str, fmt: str, players: list[str]) -> int:
-    """Crea el torneo: baraja jugadores y arma grupos (o liga)."""
+def _build_groups(players: list[str], fmt: str) -> tuple[str, dict]:
+    """Baraja y arma grupos (o liga). Devuelve (fmt_final, data)."""
     players = [p.strip() for p in players if p.strip()]
     random.shuffle(players)
-
     data = {"players": players}
     if fmt == "liga" or len(players) <= 5:
         fmt = "liga"
@@ -71,16 +77,14 @@ def create(name: str, sport: str, fmt: str, players: list[str]) -> int:
         data["groups"] = [{"name": "Liga", "members": list(range(len(players))),
                            "fixtures": fixtures}]
     else:
-        # Grupos de 4 (y de 3/5 para cuadrar)
         n = len(players)
         n_groups = max(1, round(n / 4))
         groups = [[] for _ in range(n_groups)]
-        for i, p in enumerate(players):
+        for i in range(n):
             groups[i % n_groups].append(i)
         gdata = []
         for gi, members in enumerate(groups):
             fixtures = []
-            local = {m: m for m in members}
             for jornada in _round_robin(members):
                 for a, b in jornada:
                     fixtures.append({"a": a, "b": b, "sa": None, "sb": None})
@@ -88,12 +92,82 @@ def create(name: str, sport: str, fmt: str, players: list[str]) -> int:
                           "members": members, "fixtures": fixtures})
         data["groups"] = gdata
     data["bracket"] = None
+    return fmt, data
 
+
+def create(name: str, sport: str, fmt: str, players: list[str]) -> int:
+    """Crea torneo desde el panel (jugadores ya pegados)."""
+    fmt, data = _build_groups(players, fmt)
     row = execute("""
         INSERT INTO tournaments (name, sport, fmt, data, status)
         VALUES (%s, %s, %s, %s, %s) RETURNING id
     """, [name[:120], sport, fmt, json.dumps(data), "grupos"], fetch_one=True)
     return int(row["id"])
+
+
+def create_public(name: str, sport: str, fmt: str, owner_name: str,
+                  owner_phone: str, max_players: int, cuota: float) -> dict:
+    """Crea torneo PÚBLICO de un cliente: queda abierto a inscripciones."""
+    import secrets
+    key = secrets.token_hex(10)
+    p10 = "".join(c for c in (owner_phone or "") if c.isdigit())[-10:]
+    data = {"players": [], "inscritos": [], "groups": [], "bracket": None}
+    row = execute("""
+        INSERT INTO tournaments (name, sport, fmt, data, status, is_public,
+                                 owner_name, owner_phone10, admin_key,
+                                 max_players, cuota)
+        VALUES (%s,%s,%s,%s,'inscripcion',TRUE,%s,%s,%s,%s,%s) RETURNING id
+    """, [name[:120], sport, fmt, json.dumps(data), owner_name[:80], p10,
+          key, max(4, min(int(max_players or 16), 64)), cuota or 0],
+        fetch_one=True)
+    return {"id": int(row["id"]), "admin_key": key}
+
+
+def inscribir(tid: int, name: str, phone: str) -> dict:
+    """Inscripción pública: agrega jugador/pareja si hay cupo."""
+    t = get(tid)
+    if not t or t["status"] != "inscripcion":
+        return {"ok": False, "error": "Las inscripciones están cerradas."}
+    name = (name or "").strip()[:80]
+    p10 = "".join(c for c in (phone or "") if c.isdigit())[-10:]
+    if len(name) < 3 or len(p10) < 10:
+        return {"ok": False, "error": "Pon tu nombre y un celular de 10 dígitos."}
+    data = t["data"]
+    inscritos = data.setdefault("inscritos", [])
+    if any(i.get("phone") == p10 for i in inscritos):
+        return {"ok": False, "error": "Ese celular ya está inscrito."}
+    if len(inscritos) >= int(t.get("max_players") or 16):
+        return {"ok": False, "error": "¡Cupo lleno!"}
+    inscritos.append({"name": name, "phone": p10})
+    _save(tid, data)
+    return {"ok": True, "pos": len(inscritos), "cupo": int(t.get("max_players") or 16)}
+
+
+def quitar_inscrito(tid: int, idx: int):
+    t = get(tid)
+    if not t or t["status"] != "inscripcion":
+        return
+    data = t["data"]
+    try:
+        data["inscritos"].pop(idx)
+        _save(tid, data)
+    except (IndexError, KeyError):
+        pass
+
+
+def cerrar_y_sortear(tid: int) -> bool:
+    """Cierra inscripciones y sortea los grupos."""
+    t = get(tid)
+    if not t or t["status"] != "inscripcion":
+        return False
+    inscritos = t["data"].get("inscritos", [])
+    if len(inscritos) < 3:
+        return False
+    fmt, data = _build_groups([i["name"] for i in inscritos], t["fmt"])
+    data["inscritos"] = inscritos
+    execute("UPDATE tournaments SET data=%s, status='grupos', fmt=%s WHERE id=%s",
+            [json.dumps(data), fmt, tid])
+    return True
 
 
 def get(tid: int) -> dict | None:
@@ -247,10 +321,13 @@ def _esc(s) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def render_detail(t: dict) -> str:
+def render_detail(t: dict, base: str = None, qs: str = "",
+                  readonly: bool = False, extra_top: str = "") -> str:
     data = t["data"]
-    players = data["players"]
+    players = data.get("players", [])
     tid = t["id"]
+    if base is None:
+        base = f"/api/panel/torneos/{tid}"
 
     def pname(i):
         if i is None:
@@ -273,17 +350,23 @@ def render_detail(t: dict) -> str:
         for f, fx in enumerate(group["fixtures"]):
             sa = "" if fx["sa"] is None else fx["sa"]
             sb = "" if fx["sb"] is None else fx["sb"]
-            partidos += (
-                f'<form class="fx" method="post" action="/api/panel/torneos/{tid}/score">'
-                f'<input type="hidden" name="g" value="{g}">'
-                f'<input type="hidden" name="f" value="{f}">'
-                f'<span class="fxn">{pname(fx["a"])}</span>'
-                f'<input name="sa" type="number" min="0" value="{sa}">'
-                f'<b>vs</b>'
-                f'<input name="sb" type="number" min="0" value="{sb}">'
-                f'<span class="fxn">{pname(fx["b"])}</span>'
-                f'<button type="submit">✓</button></form>'
-            )
+            if readonly:
+                marcador = (f"{sa} - {sb}" if sa != "" and sb != "" else "por jugar")
+                partidos += (f'<div class="fx"><span class="fxn">{pname(fx["a"])}</span>'
+                             f'<b>{marcador}</b>'
+                             f'<span class="fxn">{pname(fx["b"])}</span></div>')
+            else:
+                partidos += (
+                    f'<form class="fx" method="post" action="{base}/score{qs}">'
+                    f'<input type="hidden" name="g" value="{g}">'
+                    f'<input type="hidden" name="f" value="{f}">'
+                    f'<span class="fxn">{pname(fx["a"])}</span>'
+                    f'<input name="sa" type="number" min="0" value="{sa}">'
+                    f'<b>vs</b>'
+                    f'<input name="sb" type="number" min="0" value="{sb}">'
+                    f'<span class="fxn">{pname(fx["b"])}</span>'
+                    f'<button type="submit">✓</button></form>'
+                )
         ghtml += (
             f'<div class="gcard"><h3>{_esc(group["name"])}</h3>'
             f'<table class="tbl"><tr><th>#</th><th>Jugador/Pareja</th>'
@@ -304,7 +387,9 @@ def render_detail(t: dict) -> str:
                     if idx is None:
                         return '<div class="bslot empty">—</div>'
                     win = ' win' if m.get("winner") == idx else ''
-                    return (f'<form method="post" action="/api/panel/torneos/{tid}/winner" '
+                    if readonly:
+                        return f'<div class="bslot{win}">{pname(idx)}</div>'
+                    return (f'<form method="post" action="{base}/winner{qs}" '
                             f'style="margin:0">'
                             f'<input type="hidden" name="r" value="{r}">'
                             f'<input type="hidden" name="m" value="{i}">'
@@ -319,13 +404,14 @@ def render_detail(t: dict) -> str:
         if final.get("winner") is not None:
             campeon = (f'<div class="champ">🏆 Campeón: '
                        f'<b>{pname(final["winner"])}</b></div>')
-        bhtml = (f'<h2>🏆 Eliminatoria</h2>{campeon}'
-                 f'<p class="hint">Pica el nombre del ganador de cada partido '
-                 f'para avanzarlo.</p>'
+        hint = ("" if readonly else
+                '<p class="hint">Pica el nombre del ganador de cada partido '
+                'para avanzarlo.</p>')
+        bhtml = (f'<h2>🏆 Eliminatoria</h2>{campeon}{hint}'
                  f'<div class="bwrap">{cols}</div>')
-    elif t["fmt"] == "grupos":
+    elif t["fmt"] == "grupos" and not readonly and data.get("groups"):
         bhtml = (
-            f'<form method="post" action="/api/panel/torneos/{tid}/bracket" '
+            f'<form method="post" action="{base}/bracket{qs}" '
             f'onsubmit="return confirm(\'¿Generar las llaves con la tabla actual? '
             f'Avanzan los 2 primeros de cada grupo.\')">'
             f'<button class="bigbtn" type="submit">⚔️ Generar eliminatoria '
@@ -376,7 +462,7 @@ h2 {{ font-size:1rem; margin:1.4rem 0 0.6rem; }}
 @media print {{ .fx button, .bigbtn, a.back {{ display:none; }} }}
 </style></head><body>
 <div class="top">
-  <a class="back" href="/panel">← Panel</a>
+  {"" if readonly else '<a class="back" href="/panel">← Panel</a>'}{extra_top}
   <h1>{sport_emoji} {_esc(t["name"])}</h1>
   <span class="badge">{_esc(t["fmt"])}</span>
   <span class="badge">{len(players)} participantes</span>
@@ -385,3 +471,119 @@ h2 {{ font-size:1rem; margin:1.4rem 0 0.6rem; }}
 <div class="gwrap">{ghtml}</div>
 {bhtml}
 </body></html>"""
+
+
+# ─────────────────────────────────────────────────────
+# PÁGINAS PÚBLICAS (/torneos, /t/{id})
+# ─────────────────────────────────────────────────────
+
+_PUB_CSS = """
+body { font-family:-apple-system,'Segoe UI',Roboto,sans-serif; background:#f6f7f9;
+       color:#0f172a; margin:0; padding:1rem; max-width:720px; margin:0 auto; }
+h1 { font-size:1.3rem; } h2 { font-size:1rem; margin-top:1.4rem; }
+.card { background:white; border:1px solid #e5e7eb; border-radius:14px;
+        padding:1.2rem; margin:0.8rem 0; }
+label { display:block; font-size:0.85rem; color:#374151; margin-bottom:0.7rem; }
+input, select { width:100%; border:1px solid #d1d5db; border-radius:8px;
+                padding:10px; margin-top:4px; box-sizing:border-box; font-size:16px; }
+button.go { background:#10b981; color:white; border:none; border-radius:10px;
+            padding:12px 18px; font-size:1rem; cursor:pointer; width:100%; }
+.pill { background:#eef2ff; color:#3730a3; border-radius:999px; padding:3px 10px;
+        font-size:0.75rem; margin-right:6px; }
+.ok { background:#d1fae5; border:1px solid #6ee7b7; border-radius:10px; padding:12px; }
+.err { background:#fee2e2; border:1px solid #fca5a5; border-radius:10px; padding:12px; }
+a { color:#059669; }
+.linkbox { background:#f3f4f6; border-radius:8px; padding:8px 10px; font-size:0.8rem;
+           word-break:break-all; margin:6px 0; }
+ol li { margin:4px 0; }
+"""
+
+
+def _pub_page(title: str, body: str) -> str:
+    return (f'<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>{_esc(title)} — Club de Padel Victoria</title>'
+            f'<style>{_PUB_CSS}</style></head><body>'
+            f'<h1>🎾 Club de Padel Victoria</h1>{body}'
+            f'<p style="color:#9ca3af;font-size:0.75rem;margin-top:2rem">'
+            f'Potenciado por MatchBot</p></body></html>')
+
+
+def render_public_list() -> str:
+    rows = execute("""
+        SELECT id, name, sport, fmt, status, max_players, cuota, owner_name, data
+        FROM tournaments WHERE is_public=TRUE AND status <> 'terminado'
+        ORDER BY created_at DESC LIMIT 30
+    """, fetch_all=True) or []
+    cards = ""
+    for r in rows:
+        data = r["data"] if isinstance(r["data"], dict) else json.loads(r["data"])
+        n = len(data.get("inscritos", []))
+        estado = ("🟢 Inscripciones abiertas" if r["status"] == "inscripcion"
+                  else "🏃 En juego")
+        cuota = f' · 💵 ${float(r["cuota"]):.0f}' if float(r["cuota"] or 0) > 0 else ""
+        cards += (
+            f'<div class="card"><b>{"🎾" if r["sport"]=="padel" else "⚽"} '
+            f'{_esc(r["name"])}</b><br>'
+            f'<span class="pill">{estado}</span>'
+            f'<span class="pill">{n}/{r["max_players"]} lugares</span>'
+            f'<span class="pill">Organiza: {_esc(r["owner_name"] or "el club")}</span>'
+            f'{cuota}<br><br><a href="/t/{r["id"]}">Ver torneo e inscribirme →</a></div>'
+        )
+    if not cards:
+        cards = '<div class="card">Aún no hay torneos abiertos. ¡Crea el primero! 👇</div>'
+
+    form = """
+    <h2>➕ Crea tu propio torneo o liga</h2>
+    <div class="card"><form method="post" action="/torneos/crear">
+      <label>Nombre del torneo<input name="name" required placeholder="Torneo de mi colonia"></label>
+      <label>Tu nombre<input name="owner_name" required placeholder="Juan Pérez"></label>
+      <label>Tu celular (WhatsApp)<input name="owner_phone" required pattern="[0-9 ]{10,13}" placeholder="8341234567"></label>
+      <label>Deporte<select name="sport"><option value="padel">🎾 Pádel</option>
+        <option value="futbol">⚽ Fútbol</option></select></label>
+      <label>Formato<select name="fmt"><option value="grupos">Grupos + eliminatoria</option>
+        <option value="liga">Liga (todos contra todos)</option></select></label>
+      <label>Cupo máximo<select name="max_players">
+        <option>8</option><option selected>16</option><option>24</option><option>32</option>
+      </select></label>
+      <label>Cuota de inscripción (informativa, se paga en el club)
+        <input name="cuota" type="number" min="0" value="0"></label>
+      <button class="go" type="submit">Crear torneo y obtener mi link</button>
+    </form>
+    <p class="hint" style="color:#6b7280;font-size:0.78rem">En pádel, cada
+    inscripción es una PAREJA (se inscriben con un solo nombre de pareja).</p></div>
+    """
+    return _pub_page("Torneos", f"<h2>🏆 Torneos abiertos</h2>{cards}{form}")
+
+
+def render_public_tournament(t: dict, msg: str = "", ok: bool = True) -> str:
+    data = t["data"]
+    tid = t["id"]
+    n = len(data.get("inscritos", []))
+    cupo = int(t.get("max_players") or 16)
+    aviso = f'<div class="{"ok" if ok else "err"}">{_esc(msg)}</div>' if msg else ""
+    cuota = (f'<p>💵 Cuota de inscripción: <b>${float(t.get("cuota") or 0):.0f} MXN</b> '
+             f'(se paga en el club)</p>' if float(t.get("cuota") or 0) > 0 else "")
+
+    if t["status"] == "inscripcion":
+        inscritos = "".join(f'<li>{_esc(i["name"])}</li>'
+                            for i in data.get("inscritos", []))
+        lista = f'<h2>Inscritos ({n}/{cupo})</h2><ol>{inscritos or "<i>Sé el primero</i>"}</ol>'
+        form = "" if n >= cupo else f"""
+        <div class="card"><h2 style="margin-top:0">📝 Inscribirme</h2>
+        <form method="post" action="/t/{tid}/inscribir">
+          <label>{"Nombre de la PAREJA (ej. Juan / Pedro)" if t["sport"]=="padel" else "Nombre del equipo o jugador"}
+            <input name="name" required></label>
+          <label>Celular (WhatsApp)<input name="phone" required pattern="[0-9 ]{{10,13}}" placeholder="8341234567"></label>
+          <button class="go" type="submit">¡Inscribirme!</button>
+        </form></div>"""
+        body = (f'<h2>{"🎾" if t["sport"]=="padel" else "⚽"} {_esc(t["name"])}</h2>'
+                f'<span class="pill">🟢 Inscripciones abiertas</span>'
+                f'<span class="pill">Organiza: {_esc(t.get("owner_name") or "el club")}</span>'
+                f'{cuota}{aviso}{form}{lista}')
+        return _pub_page(t["name"], body)
+
+    # Torneo en juego/terminado: vista pública de solo lectura
+    top = (f'{aviso}<p><span class="pill">Organiza: '
+           f'{_esc(t.get("owner_name") or "el club")}</span></p>')
+    return render_detail(t, readonly=True, extra_top=top)
