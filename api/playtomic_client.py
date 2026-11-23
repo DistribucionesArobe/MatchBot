@@ -1449,41 +1449,83 @@ class PlaytomicClient:
                         continue
                 return oldest
 
+            async def _get(sport: str, extra: dict):
+                try:
+                    return await self.client.get(
+                        f"{PLAYTOMIC_API}/v1/matches",
+                        headers={
+                            "Authorization": f"Bearer {self.tenant_token}",
+                            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+                            "x-authorization-scope": f"tenant:{TENANT_ID}",
+                        },
+                        params={
+                            "tenant_id": TENANT_ID,
+                            "sport_id": sport,
+                            "sort": "start_date:desc",
+                            **extra,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(f"List matches {sport} {extra} failed: {e}")
+                    return None
+
             async def _fetch_sport(sport: str):
+                """Primera página SIN parámetro de paginación (formato probado).
+                Intenta primero size grande; si el API lo rechaza, cae a 200.
+                Para más páginas prueba 'page' y luego 'offset'; si ninguno
+                funciona, se queda con lo obtenido (nunca peor que antes)."""
                 collected = []
                 pages_info = []
-                for page in range(MAX_PAGES):
-                    try:
-                        r = await self.client.get(
-                            f"{PLAYTOMIC_API}/v1/matches",
-                            headers={
-                                "Authorization": f"Bearer {self.tenant_token}",
-                                "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
-                                "x-authorization-scope": f"tenant:{TENANT_ID}",
-                            },
-                            params={
-                                "tenant_id": TENANT_ID,
-                                "sport_id": sport,
-                                "sort": "start_date:desc",
-                                "size": 200,
-                                "page": page,
-                            },
-                        )
-                    except Exception as e:
-                        logger.warning(f"List matches {sport} p{page} failed: {e}")
-                        pages_info.append(f"p{page}:exception")
+                size = 200
+                items = []
+                for first_size in (1000, 500, 200):
+                    r = await _get(sport, {"size": first_size})
+                    code = r.status_code if r is not None else "exc"
+                    if r is not None and r.status_code == 200:
+                        items = _page_items(r) or []
+                        pages_info.append(f"s{first_size}:{len(items)}")
+                        collected.extend(items)
+                        size = first_size
                         break
-                    if r.status_code != 200:
-                        pages_info.append(f"p{page}:{r.status_code}")
-                        break
+                    pages_info.append(f"s{first_size}:{code}")
+                else:
+                    return collected, pages_info
+
+                oldest = _oldest_start(items)
+                if len(items) < size or (oldest and oldest < min_needed):
+                    return collected, pages_info
+
+                # Más páginas (si el API acepta alguno de los dos estilos)
+                style = None
+                for page in range(1, MAX_PAGES):
+                    styles = [style] if style else ["page", "offset"]
+                    r = None
+                    for st in styles:
+                        extra = ({"size": size, "page": page} if st == "page"
+                                 else {"size": size, "offset": page * size})
+                        r = await _get(sport, extra)
+                        if r is not None and r.status_code == 200:
+                            style = st
+                            break
+                        pages_info.append(
+                            f"{st}{page}:{r.status_code if r is not None else 'exc'}")
+                        r = None
+                    if r is None:
+                        break  # paginación no soportada: conservar lo que hay
                     items = _page_items(r) or []
-                    pages_info.append(f"p{page}:{len(items)}")
+                    pages_info.append(f"{style}{page}:{len(items)}")
+                    if not items:
+                        break
+                    # Si el API ignora la paginación, devuelve lo mismo: detectar
+                    new_ids = {m.get("match_id") for m in items}
+                    old_ids = {m.get("match_id") for m in collected}
+                    if new_ids and new_ids.issubset(old_ids):
+                        pages_info.append("repetida:stop")
+                        break
                     collected.extend(items)
-                    if len(items) < 200:
-                        break  # última página
                     oldest = _oldest_start(items)
-                    if oldest and oldest < min_needed:
-                        break  # ya cubrimos el rango necesario
+                    if len(items) < size or (oldest and oldest < min_needed):
+                        break
                 return collected, pages_info
 
             self._last_list_debug = {}
