@@ -206,6 +206,21 @@ async def reservar(playtomic, raw_date: str, time_str: str,
     except Exception as e:
         logger.error(f"voice notify failed: {e}")
 
+    # Link de equipo al WhatsApp del cliente (reservó por llamada)
+    try:
+        from api.promos import send_alert as _sa
+        _pid = os.getenv("PHONE_NUMBER_ID_PADEL", "")
+        _tok = os.getenv("WHATSAPP_TOKEN", "")
+        _mid = result.get("match_id", "")
+        if _pid and _tok and _mid:
+            base = os.getenv("PUBLIC_BASE_URL", "https://matchbot.live")
+            await _sa(_pid, _tok, telefono,
+                f"✅ *Reserva confirmada por llamada* 🎾\n\n"
+                f"👥 Comparte este link en tu grupo para que tus compañeros "
+                f"se apunten solos:\n🔗 {base}/j/{_mid}")
+    except Exception as e:
+        logger.error(f"voice share link failed: {e}")
+
     # Cobro automático con monedero
     pago_frase = "se paga al llegar al club"
     if wallet_will_pay:

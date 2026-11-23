@@ -323,16 +323,15 @@ async def _handle_reg_birthday(phone_id, token, to, club_id, text, data):
             "No te entendí 😅 Escríbelo como *día/mes* (ejemplo *15/05*), o escribe *no*.")
 
 
-def _guests_prompt(match_id: str = "") -> str:
+def _share_link_msg(match_id: str) -> str:
     base = os.getenv("PUBLIC_BASE_URL", "https://matchbot.live")
-    link = (f"\n\n🔗 O más fácil: *reenvíales este link* y que se registren "
-            f"solos:\n{base}/j/{match_id}" if match_id else "")
-    return ("👥 *¿Quiénes juegan contigo?*\n\n"
-            "Mándame sus *contactos de WhatsApp* (📎 → Contacto) "
-            "o escríbelos así: *Juan Pérez 8341234567* — uno por mensaje."
-            f"{link}\n\n"
-            "Así también acumulan sellos 🎟️. Escribe *listo* cuando termines "
-            "(o *no* si juegas solo).")
+    return ("👥 *¡Arma tu equipo!*\n\n"
+            "Comparte este link en tu grupo y que cada quien se apunte solo:\n\n"
+            f"🔗 {base}/j/{match_id}\n\n"
+            "Te aviso aquí cada que alguien se apunte. "
+            "Los que se apunten acumulan sellos 🎟️ también.\n\n"
+            "_(Si prefieres, también puedes mandarme sus contactos de "
+            "WhatsApp 📎 y yo los registro)_")
 
 
 async def _finish_reg_then_guests(phone_id, token, to, club_id, data, prefix):
@@ -340,7 +339,7 @@ async def _finish_reg_then_guests(phone_id, token, to, club_id, data, prefix):
     if data.get("guest_match") is not None:
         _set_state(club_id, to, "adding_guests", data)
         await send_text(phone_id, token, to,
-                        f"{prefix}\n\n{_guests_prompt(data.get('guest_match', ''))}")
+                        f"{prefix}\n\n{_share_link_msg(data.get('guest_match', ''))}")
     else:
         _set_state(club_id, to, "idle", {})
         await send_text(phone_id, token, to, f"{prefix} Nos vemos en la cancha 🎾")
@@ -397,12 +396,11 @@ async def _handle_add_guests(phone_id, token, to, club_id, text, message, data):
         _set_state(club_id, to, "adding_guests", data)
         nombres = ", ".join(added)
         await send_text(phone_id, token, to,
-            f"✅ Agregado: *{nombres}* ({count} en total). "
-            f"Manda otro contacto o escribe *listo*.")
+            f"✅ Agregado: *{nombres}* ({count} en total). 🎾")
     else:
-        await send_text(phone_id, token, to,
-            "No pude leer ese contacto 😅. Mándalo con el clip 📎 → Contacto, "
-            "o escríbelo así: *Juan Pérez 8341234567*. O escribe *listo* para terminar.")
+        # No era un contacto: salir del modo invitados y atender normal
+        _set_state(club_id, to, "idle", {})
+        await _send_main_menu(phone_id, token, to, "Club de Padel Victoria")
 
 
 # ─────────────────────────────────────────────────────
@@ -1083,7 +1081,7 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
                     else:
                         _set_state(club_id, to, "adding_guests", chain)
                         await send_text(phone_id, token, to,
-                                        _guests_prompt(chain["guest_match"]))
+                                        _share_link_msg(chain["guest_match"]))
                 except Exception as e:
                     logger.error(f"customers registration prompt failed: {e}")
 
