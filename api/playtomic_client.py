@@ -1397,35 +1397,40 @@ class PlaytomicClient:
 
     async def list_matches(self, date_str: str = None) -> list:
         """List matches/bookings. If date_str given, filter to that local date.
-        Queries ALL matches from Playtomic and filters client-side since
-        the API ignores start_date_min/max parameters.
+
+        CONTRATO NOV-2026 (descifrado del Manager): /v1/matches sin ids de
+        match/usuario EXIGE from_start_date y to_start_date (máx 31 días),
+        size máx 200 y disable_price_calculation=true para size>20.
+        Ya NO exige sport_id (devuelve todos los deportes). La paginación
+        con 'page' SÍ funciona cuando hay rango. Los precios por jugador
+        siguen viniendo en registration_info.
         """
         await self.ensure_tenant_auth()
         if not self.tenant_token:
             return []
 
-        all_matches = []
-
         try:
-            # IMPORTANT: the API requires sport_id — without it the list
-            # comes back EMPTY. Query both sports IN PARALLEL and merge.
-            # desc (most recent first): upcoming bookings are always
-            # within the newest 200 matches per sport.
             import asyncio as _aio
 
-            # Hasta dónde paginar hacia atrás: 35 días antes de hoy (o del
-            # día pedido). Con sort desc (lo más futuro primero), seguimos
-            # pidiendo páginas hasta rebasar esa fecha — así un club con
-            # cientos de reservas a futuro no deja fuera la semana actual.
+            # Ventanas de consulta (cada una ≤ 31 días):
+            #  - con date_str: el día pedido ±1 (cubre el desfase UTC)
+            #  - sin date_str: 35 días atrás → 55 días adelante (3 ventanas)
             if date_str:
                 try:
-                    _target = datetime.fromisoformat(date_str)
+                    base = datetime.fromisoformat(date_str)
                 except ValueError:
-                    _target = datetime.utcnow()
+                    base = datetime.utcnow()
+                windows = [(base - timedelta(days=1), base + timedelta(days=2))]
             else:
-                _target = datetime.utcnow()
-            min_needed = _target - timedelta(days=35)
-            MAX_PAGES = 10
+                now = datetime.utcnow()
+                windows = [
+                    (now - timedelta(days=35), now - timedelta(days=5)),
+                    (now - timedelta(days=5), now + timedelta(days=25)),
+                    (now + timedelta(days=25), now + timedelta(days=55)),
+                ]
+
+            def _fmt(dt):
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
             def _page_items(r):
                 if r is None or r.status_code != 200:
@@ -1437,104 +1442,51 @@ class PlaytomicClient:
                     return data.get("matches", data.get("results", []))
                 return []
 
-            def _oldest_start(items):
-                oldest = None
-                for m in items:
-                    s = str(m.get("start_date") or "")[:19]
+            async def _fetch_window(w_from, w_to):
+                collected, info = [], []
+                for page in range(10):
                     try:
-                        dt = datetime.fromisoformat(s)
-                        if oldest is None or dt < oldest:
-                            oldest = dt
-                    except ValueError:
-                        continue
-                return oldest
-
-            async def _get(sport: str, extra: dict):
-                try:
-                    return await self.client.get(
-                        f"{PLAYTOMIC_API}/v1/matches",
-                        headers={
-                            "Authorization": f"Bearer {self.tenant_token}",
-                            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
-                            "x-authorization-scope": f"tenant:{TENANT_ID}",
-                        },
-                        params={
-                            "tenant_id": TENANT_ID,
-                            "sport_id": sport,
-                            "sort": "start_date:desc",
-                            **extra,
-                        },
-                    )
-                except Exception as e:
-                    logger.warning(f"List matches {sport} {extra} failed: {e}")
-                    return None
-
-            async def _fetch_sport(sport: str):
-                """Primera página SIN parámetro de paginación (formato probado).
-                Intenta primero size grande; si el API lo rechaza, cae a 200.
-                Para más páginas prueba 'page' y luego 'offset'; si ninguno
-                funciona, se queda con lo obtenido (nunca peor que antes)."""
-                collected = []
-                pages_info = []
-                size = 200
-                items = []
-                for first_size in (1000, 500, 200):
-                    r = await _get(sport, {"size": first_size})
-                    code = r.status_code if r is not None else "exc"
-                    if r is not None and r.status_code == 200:
-                        items = _page_items(r) or []
-                        pages_info.append(f"s{first_size}:{len(items)}")
-                        collected.extend(items)
-                        size = first_size
+                        r = await self.client.get(
+                            f"{PLAYTOMIC_API}/v1/matches",
+                            headers={
+                                "Authorization": f"Bearer {self.tenant_token}",
+                                "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+                                "x-authorization-scope": f"tenant:{TENANT_ID}",
+                            },
+                            params={
+                                "tenant_id": TENANT_ID,
+                                "from_start_date": _fmt(w_from),
+                                "to_start_date": _fmt(w_to),
+                                "size": 200,
+                                "page": page,
+                                "disable_price_calculation": "true",
+                                "sort": "start_date:desc",
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"List window p{page} failed: {e}")
+                        info.append(f"p{page}:exc")
                         break
-                    pages_info.append(f"s{first_size}:{code}")
-                else:
-                    return collected, pages_info
-
-                oldest = _oldest_start(items)
-                if len(items) < size or (oldest and oldest < min_needed):
-                    return collected, pages_info
-
-                # Más páginas (si el API acepta alguno de los dos estilos)
-                style = None
-                for page in range(1, MAX_PAGES):
-                    styles = [style] if style else ["page", "offset"]
-                    r = None
-                    for st in styles:
-                        extra = ({"size": size, "page": page} if st == "page"
-                                 else {"size": size, "offset": page * size})
-                        r = await _get(sport, extra)
-                        if r is not None and r.status_code == 200:
-                            style = st
-                            break
-                        pages_info.append(
-                            f"{st}{page}:{r.status_code if r is not None else 'exc'}")
-                        r = None
-                    if r is None:
-                        break  # paginación no soportada: conservar lo que hay
+                    if r.status_code != 200:
+                        info.append(f"p{page}:{r.status_code}")
+                        if page == 0:
+                            logger.warning(f"List window {r.status_code}: {r.text[:200]}")
+                        break
                     items = _page_items(r) or []
-                    pages_info.append(f"{style}{page}:{len(items)}")
-                    if not items:
-                        break
-                    # Si el API ignora la paginación, devuelve lo mismo: detectar
-                    new_ids = {m.get("match_id") for m in items}
-                    old_ids = {m.get("match_id") for m in collected}
-                    if new_ids and new_ids.issubset(old_ids):
-                        pages_info.append("repetida:stop")
-                        break
+                    info.append(f"p{page}:{len(items)}")
                     collected.extend(items)
-                    oldest = _oldest_start(items)
-                    if len(items) < size or (oldest and oldest < min_needed):
+                    if len(items) < 200:
                         break
-                return collected, pages_info
+                return collected, info
 
+            results = await _aio.gather(*[_fetch_window(a, b) for a, b in windows])
+            all_matches = []
             self._last_list_debug = {}
-            results = await _aio.gather(_fetch_sport("PADEL"), _fetch_sport("FOOTBALL7"))
-            for i, (items, pages_info) in enumerate(results):
-                sport_lbl = ["PADEL", "FOOTBALL7"][i]
-                self._last_list_debug[sport_lbl] = ",".join(pages_info)
-                logger.info(f"List matches {sport_lbl}: {len(items)} items ({pages_info})")
+            for i, (items, info) in enumerate(results):
+                self._last_list_debug[f"ventana{i}"] = ",".join(info)
                 all_matches.extend(items)
+            logger.info(f"List matches: {len(all_matches)} items "
+                        f"({self._last_list_debug})")
 
             # Deduplicate by match_id
             seen = set()
@@ -1550,11 +1502,8 @@ class PlaytomicClient:
                 offset_h = abs(CLUB_UTC_OFFSET)
                 target = date.fromisoformat(date_str)
                 next_day = target + timedelta(days=1)
-
-                # UTC range for full local day
                 utc_start = datetime(target.year, target.month, target.day, offset_h, 0, 0)
                 utc_end = datetime(next_day.year, next_day.month, next_day.day, offset_h, 0, 0)
-
                 filtered = []
                 for m in unique:
                     sd = m.get("start_date", m.get("start", ""))
@@ -1572,7 +1521,6 @@ class PlaytomicClient:
         except Exception as e:
             logger.error(f"List matches error: {e}")
             return []
-
     async def list_all_matches_raw(self) -> list:
         """List ALL matches without any filter. For finding test bookings."""
         await self.ensure_tenant_auth()
