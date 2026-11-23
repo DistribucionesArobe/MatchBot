@@ -611,7 +611,14 @@ section.visible { display:block; }
   .court-head { font-size:0.68rem; }
   .cards { grid-template-columns:repeat(2, 1fr); }
   #fab { display:flex; }
-  .modal { width:92vw; max-width:360px; }
+  .modal-bg { align-items:flex-start; padding-top:4vh; overflow-y:auto; }
+  .modal { width:92vw; max-width:92vw; max-height:88vh; overflow-y:auto;
+           padding:1.1rem; box-sizing:border-box; }
+  /* iOS hace zoom si los campos tienen letra <16px — esto lo evita */
+  .modal input, .modal select, .modal textarea,
+  .walletform input, .userform input, .userform select,
+  .configform input, textarea { font-size:16px; }
+  .modal label { font-size:0.85rem; }
 }
 </style></head><body>
 <div class="sidebar">
