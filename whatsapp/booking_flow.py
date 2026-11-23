@@ -274,6 +274,8 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
         await _handle_reg_name(phone_id, token, wa_phone, club_id, text, data)
     elif state == "reg_birthday":
         await _handle_reg_birthday(phone_id, token, wa_phone, club_id, text, data)
+    elif state == "adding_guests":
+        await _handle_add_guests(phone_id, token, wa_phone, club_id, text, message, data)
     else:
         # Unknown input in idle state
         await _send_main_menu(phone_id, token, wa_phone, club.get("name", "MatchBot"))
@@ -296,7 +298,7 @@ async def _handle_reg_name(phone_id, token, to, club_id, text, data):
         return
     pretty = name.title()
     customers.save_name(to, pretty)
-    _set_state(club_id, to, "reg_birthday", {})
+    _set_state(club_id, to, "reg_birthday", data)
     first = pretty.split()[0]
     await send_text(phone_id, token, to,
         f"✅ ¡Gracias, {first}! Ya quedaste registrado — tus próximas reservas "
@@ -308,18 +310,94 @@ async def _handle_reg_name(phone_id, token, to, club_id, text, data):
 async def _handle_reg_birthday(phone_id, token, to, club_id, text, data):
     t = (text or "").strip().lower()
     if t in ("no", "n", "salir", "luego", "despues", "después", "skip"):
-        _set_state(club_id, to, "idle", {})
-        await send_text(phone_id, token, to, "👍 ¡Listo, registro completo! Nos vemos en la cancha 🎾")
+        await _finish_reg_then_guests(phone_id, token, to, club_id, data,
+            "👍 ¡Listo, registro completo!")
         return
     bd = customers.parse_birthday(t)
     if bd:
         customers.save_birthday(to, bd)
-        _set_state(club_id, to, "idle", {})
-        await send_text(phone_id, token, to,
-            f"🎂 ¡Anotado ({bd})! Espera una sorpresa del club en tu día 🎁🎾")
+        await _finish_reg_then_guests(phone_id, token, to, club_id, data,
+            f"🎂 ¡Anotado ({bd})! Espera una sorpresa del club en tu día 🎁")
     else:
         await send_text(phone_id, token, to,
             "No te entendí 😅 Escríbelo como *día/mes* (ejemplo *15/05*), o escribe *no*.")
+
+
+def _guests_prompt() -> str:
+    return ("👥 *¿Quiénes juegan contigo?*\n\n"
+            "Mándame sus *contactos de WhatsApp* (📎 → Contacto) "
+            "o escríbelos así: *Juan Pérez 8341234567* — uno por mensaje.\n\n"
+            "Así también acumulan sellos 🎟️. Escribe *listo* cuando termines "
+            "(o *no* si juegas solo).")
+
+
+async def _finish_reg_then_guests(phone_id, token, to, club_id, data, prefix):
+    """Tras el registro, si venimos de una reserva, pedir a los compañeros."""
+    if data.get("guest_match") is not None:
+        _set_state(club_id, to, "adding_guests", data)
+        await send_text(phone_id, token, to, f"{prefix}\n\n{_guests_prompt()}")
+    else:
+        _set_state(club_id, to, "idle", {})
+        await send_text(phone_id, token, to, f"{prefix} Nos vemos en la cancha 🎾")
+
+
+def _parse_shared_contacts(message: dict) -> list[tuple[str, str]]:
+    """Contactos compartidos de WhatsApp → [(nombre, teléfono)]."""
+    out = []
+    for c in message.get("contacts", []) or []:
+        name = ((c.get("name") or {}).get("formatted_name")
+                or (c.get("name") or {}).get("first_name") or "").strip()
+        phones = c.get("phones", []) or []
+        phone = ""
+        for p in phones:
+            phone = p.get("wa_id") or p.get("phone") or ""
+            if phone:
+                break
+        if name and phone:
+            out.append((name, phone))
+    return out
+
+
+async def _handle_add_guests(phone_id, token, to, club_id, text, message, data):
+    t = (text or "").strip().lower()
+    match_id = data.get("guest_match", "")
+    count = int(data.get("guests", 0))
+
+    if t in ("listo", "ya", "no", "ninguno", "salir", "terminar", "fin"):
+        _set_state(club_id, to, "idle", {})
+        if count:
+            await send_text(phone_id, token, to,
+                f"🎾 ¡Listo! Guardé a tus {count} compañero(s). "
+                f"Ya son parte del club y acumulan sellos. Nos vemos en la cancha 💪")
+        else:
+            await send_text(phone_id, token, to, "👍 Sin problema. ¡Nos vemos en la cancha! 🎾")
+        return
+
+    added = []
+    # a) Contactos compartidos
+    for name, phone in _parse_shared_contacts(message):
+        if customers.add_guest(match_id, name, phone, to):
+            added.append(name)
+    # b) Texto "Nombre 8341234567"
+    if not added and text:
+        digits = "".join(ch for ch in text if ch.isdigit())
+        name = "".join(ch for ch in text if not ch.isdigit()).replace("+", "").strip(" ,.-")
+        if len(digits) >= 10 and len(name) >= 2:
+            if customers.add_guest(match_id, name, digits, to):
+                added.append(name.title())
+
+    if added:
+        count += len(added)
+        data["guests"] = count
+        _set_state(club_id, to, "adding_guests", data)
+        nombres = ", ".join(added)
+        await send_text(phone_id, token, to,
+            f"✅ Agregado: *{nombres}* ({count} en total). "
+            f"Manda otro contacto o escribe *listo*.")
+    else:
+        await send_text(phone_id, token, to,
+            "No pude leer ese contacto 😅. Mándalo con el clip 📎 → Contacto, "
+            "o escríbelo así: *Juan Pérez 8341234567*. O escribe *listo* para terminar.")
 
 
 # ─────────────────────────────────────────────────────
@@ -986,16 +1064,20 @@ async def _handle_confirm(phone_id, token, to, club_id, text, button_id, data):
 
             await send_text(phone_id, token, to, confirmation_msg)
 
-            # ── Base de clientes: contar reserva y registrar nombre la 1a vez ──
+            # ── Base de clientes: contar reserva, registro y compañeros ──
             if result.get("success"):
                 try:
                     customers.touch_booking(to, source="chat")
+                    chain = {"guest_match": result.get("match_id", ""), "guests": 0}
                     if not customers.registered_name(to):
-                        _set_state(club_id, to, "reg_name", {})
+                        _set_state(club_id, to, "reg_name", chain)
                         await send_text(phone_id, token, to,
                             "📇 *Una última cosa:* para registrarte como cliente del club "
                             "y que tus reservas siempre salgan a tu nombre, "
                             "¿cuál es tu *nombre completo*?")
+                    else:
+                        _set_state(club_id, to, "adding_guests", chain)
+                        await send_text(phone_id, token, to, _guests_prompt())
                 except Exception as e:
                     logger.error(f"customers registration prompt failed: {e}")
 

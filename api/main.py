@@ -77,6 +77,7 @@ async def startup():
         promos.ensure_tables()
         from api import customers
         customers.ensure_table()
+        customers.ensure_guests_table()
         logger.info("📇 Customers table ready")
         from api import wallet
         wallet.ensure_tables()
@@ -774,12 +775,16 @@ async def _process_buffered(buf_key: str, club: dict, sender: str, profile_name:
     if not messages:
         return
 
-    # Process only the last message (user's final intent)
-    last_msg = messages[-1]
-    try:
-        await handle_message(club, sender, last_msg, profile_name=profile_name)
-    except Exception as e:
-        logger.error(f"Error handling message from {sender}: {e}", exc_info=True)
+    # Solo texto: procesar únicamente el último (intención final del usuario).
+    # Si hay contactos compartidos u otros tipos, procesar TODOS en orden
+    # (ej. mandó 3 contactos seguidos para su reserva).
+    if all(m.get("type") == "text" for m in messages):
+        messages = messages[-1:]
+    for m in messages:
+        try:
+            await handle_message(club, sender, m, profile_name=profile_name)
+        except Exception as e:
+            logger.error(f"Error handling message from {sender}: {e}", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────

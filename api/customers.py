@@ -43,6 +43,39 @@ def ensure_table():
     """)
 
 
+def ensure_guests_table():
+    execute("""
+        CREATE TABLE IF NOT EXISTS booking_guests (
+            id SERIAL PRIMARY KEY,
+            match_id TEXT,
+            phone10 TEXT,
+            name TEXT,
+            added_by TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+
+def add_guest(match_id: str, name: str, phone: str, added_by: str) -> bool:
+    """Registra a un acompañante de la reserva y lo mete a la base de clientes."""
+    key = phone10(phone)
+    name = (name or "").strip()[:80]
+    if len(key) < 10 or len(name) < 2:
+        return False
+    try:
+        execute("""
+            INSERT INTO booking_guests (match_id, phone10, name, added_by)
+            VALUES (%s, %s, %s, %s)
+        """, [match_id or "", key, name, phone10(added_by)])
+        # A la base de clientes (sin pisar un nombre ya registrado)
+        if not registered_name(key):
+            save_name(key, name.title(), source="invitado")
+    except Exception as e:
+        logger.error(f"add_guest failed: {e}")
+        return False
+    return True
+
+
 def get(phone: str) -> dict | None:
     key = phone10(phone)
     if not key:
