@@ -581,6 +581,10 @@ section.visible { display:block; }
 .cancelbtn { background:#f3f4f6; border:1px solid #d1d5db; border-radius:8px; padding:8px 14px; cursor:pointer; }
 .dangerbtn { background:#dc2626; color:white; border:none; border-radius:8px; padding:8px 14px; cursor:pointer; }
 .dangerbtn:disabled { opacity:0.6; }
+#fab { display:none; position:fixed; bottom:20px; right:20px; width:58px; height:58px;
+       border-radius:50%; background:#10b981; color:white; font-size:1.5rem; border:none;
+       box-shadow:0 10px 24px rgba(16,185,129,.45); z-index:45; cursor:pointer;
+       align-items:center; justify-content:center; }
 .block[data-mid] { cursor:grab; }
 .block.dragging { opacity:0.75; box-shadow:0 10px 24px rgba(0,0,0,.3); z-index:30; cursor:grabbing; }
 .toast { position:fixed; bottom:22px; right:22px; background:#111827; color:white; padding:10px 16px;
@@ -591,6 +595,24 @@ section.visible { display:block; }
 .configform input { display:block; border:1px solid #d1d5db; border-radius:8px; padding:7px 9px; margin-top:3px; width:150px; }
 .configform input.wide { width:330px; }
 .configform h4 { margin:0.8rem 0 0.5rem; font-size:0.85rem; color:#111827; }
+@media (max-width: 840px) {
+  body { flex-direction:column; }
+  .sidebar { width:100%; display:flex; flex-direction:row; align-items:center;
+             overflow-x:auto; padding:0.3rem 0.5rem; border-right:none;
+             border-bottom:1px solid #e5e7eb; position:sticky; top:0; z-index:40; background:white; }
+  .brand { display:none; }
+  .nav-item { white-space:nowrap; padding:0.5rem 0.6rem; border-left:none; font-size:0.78rem; }
+  .userchip { margin:0 0 0 auto; border-top:none; padding:0 0.5rem; white-space:nowrap; }
+  .main { padding:0.7rem; }
+  .topbar h1 { font-size:1rem; }
+  .legend { display:none; }
+  .cal-wrap { overflow-x:auto; }
+  .court-col { min-width:120px; }
+  .court-head { font-size:0.68rem; }
+  .cards { grid-template-columns:repeat(2, 1fr); }
+  #fab { display:flex; }
+  .modal { width:92vw; max-width:360px; }
+}
 </style></head><body>
 <div class="sidebar">
   <div class="brand">Match<span>Bot</span> Manager</div>
@@ -600,6 +622,7 @@ section.visible { display:block; }
   <div class="nav-item" data-s="premios">🎟️ Premios</div>
   <div class="nav-item" data-s="pagos">💵 Pagos</div>
   <div class="nav-item" data-s="reportes">📊 Reportes</div>
+  <div class="nav-item" data-s="torneos">🏆 Torneos</div>
   %NAV_USUARIOS%
   <div class="userchip">%USERCHIP%</div>
 </div>
@@ -619,15 +642,18 @@ section.visible { display:block; }
   <section id="premios">%PREMIOS%</section>
   <section id="pagos">%PAGOS%</section>
   <section id="reportes">%REPORTES%</section>
+  <section id="torneos">%TORNEOS%</section>
   <section id="usuarios">%USUARIOS%</section>
   <section id="config">%CONFIG%</section>
 </div>
+
+<button id="fab" title="Nueva reserva">➕</button>
 
 <div id="bookmodal" class="modal-bg">
   <form class="modal" method="post" action="/api/panel/book">
     <h3>➕ Nueva reserva</h3>
     <p class="modal-sub" id="bm_court_label"></p>
-    <input type="hidden" name="court" id="bm_court">
+    <label>Cancha<br><select name="court" id="bm_court">%COURT_OPTS%</select></label>
     <input type="hidden" name="date" value="%DAYISO%">
     <label>Hora de inicio<br><input type="time" name="time" id="bm_time" step="1800" required></label>
     <label>Duración<br><select name="duration" id="bm_dur">
@@ -664,7 +690,7 @@ section.visible { display:block; }
 <script>
 var titles ={calendario:'📅 Calendario', reservas:'📋 Reservas', clientes:'👥 Clientes',
               premios:'🎟️ Premios', pagos:'💵 Pagos', reportes:'📊 Reportes',
-              usuarios:'👤 Usuarios', config:'⚙️ Configuración'};
+              usuarios:'👤 Usuarios', config:'⚙️ Configuración', torneos:'🏆 Torneos'};
 document.querySelectorAll('.nav-item[data-s]').forEach(function(it){
   it.addEventListener('click', function(){
     document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
@@ -741,6 +767,15 @@ function openDetail(bl){
   };
   document.getElementById('detailmodal').style.display = 'flex';
 }
+
+document.getElementById('fab').addEventListener('click', function(){
+  var now = new Date();
+  var mins = Math.min(Math.max(now.getHours()*60 + 30*Math.ceil(now.getMinutes()/30), GRID_START), GRID_START + 960);
+  var hh = String(Math.floor(mins/60)).padStart(2,'0');
+  document.getElementById('bm_time').value = hh + ':' + String(mins%60).padStart(2,'0');
+  document.getElementById('bm_court_label').textContent = 'Elige la cancha y la hora';
+  document.getElementById('bookmodal').style.display = 'flex';
+});
 
 // ── Arrastrar una reserva para moverla de hora/cancha ──
 (function(){
@@ -833,6 +868,49 @@ document.querySelectorAll('.court-body').forEach(function(body){
 });
 </script>
 </body></html>"""
+
+
+def torneos_html() -> str:
+    """🏆 Ligas y torneos: crear (pegando nombres de Excel) + lista."""
+    try:
+        from api import tournaments
+        lista = tournaments.list_all()
+    except Exception as e:
+        logger.error(f"panel torneos: {e}")
+        lista = []
+    form = (
+        '<div class="userform"><h3>🏆 Nuevo torneo o liga</h3>'
+        '<form method="post" action="/api/panel/torneos">'
+        '<label>Nombre<input name="name" required placeholder="Torneo Navideño 2026"></label>'
+        '<label>Deporte<select name="sport">'
+        '<option value="padel">🎾 Pádel</option>'
+        '<option value="futbol">⚽ Fútbol</option></select></label>'
+        '<label>Formato<select name="fmt">'
+        '<option value="grupos">Grupos + eliminatoria</option>'
+        '<option value="liga">Liga (todos contra todos)</option></select></label>'
+        '<p class="hint">Pega los nombres desde Excel, uno por renglón. '
+        'En pádel pega la pareja completa en un renglón '
+        '(ej. <i>Juan Pérez / Luis García</i>). Los grupos se arman al azar.</p>'
+        '<textarea name="players" required rows="8" '
+        'style="width:100%;max-width:480px;border:1px solid #d1d5db;'
+        'border-radius:8px;padding:8px" '
+        'placeholder="Juan Pérez / Luis García&#10;Caro G. / Marcela V.&#10;..."></textarea>'
+        '<div style="margin-top:0.6rem"><button type="submit" class="savebtn">'
+        'Crear y sortear grupos</button></div></form></div>'
+    )
+    tabla = ""
+    if lista:
+        filas = "".join(
+            f'<tr><td><a href="/panel/torneo/{t["id"]}"><b>{_esc(t["name"])}</b></a></td>'
+            f'<td>{"🎾" if t["sport"] == "padel" else "⚽"}</td>'
+            f'<td>{_esc(t["fmt"])}</td><td>{_esc(t["status"])}</td>'
+            f'<td>{t["created_at"].strftime("%d/%m/%Y") if t["created_at"] else ""}</td></tr>'
+            for t in lista)
+        tabla = ('<table class="tbl"><tr><th>Torneo</th><th></th><th>Formato</th>'
+                 '<th>Estado</th><th>Creado</th></tr>' + filas + '</table>')
+    else:
+        tabla = '<div class="empty">Aún no hay torneos. ¡Crea el primero!</div>'
+    return form + tabla
 
 
 def config_html() -> str:
@@ -949,8 +1027,10 @@ async def render_panel(playtomic, date_str: str = None, user: dict = None) -> st
         .replace("%PXMIN%", str(PX_PER_MIN))
         .replace("%GRIDSTART%", str(GRID_START_MIN))
         .replace("%DAYISO%", day.isoformat())
+        .replace("%COURT_OPTS%", "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in courts))
         .replace("%NAV_USUARIOS%", nav_usuarios)
         .replace("%USERCHIP%", userchip)
+        .replace("%TORNEOS%", torneos_html())
         .replace("%USUARIOS%", usuarios_html() if is_super else "")
         .replace("%CONFIG%", config_html() if is_super else "")
         .replace("%TENANT%", tenant)

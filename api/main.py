@@ -91,6 +91,9 @@ async def startup():
         from api import mirror
         mirror.ensure_table()
         logger.info("🪞 Mirror table ready")
+        from api import tournaments
+        tournaments.ensure_table()
+        logger.info("🏆 Tournaments table ready")
     except Exception as e:
         logger.warning(f"Loyalty tables init failed: {e}")
     asyncio.create_task(_loyalty_loop())
@@ -1383,6 +1386,83 @@ async def panel_create_booking(request: Request, ajax: int = Query(0)):
         return {"ok": True, "name": name, "detalle": detalle}
     return HTMLResponse(f"<h3>✅ Reserva creada para <b>{name}</b></h3>"
                         f"<p>{detalle}</p>{back}")
+
+
+def _panel_user_or_none(request):
+    from api import auth
+    return auth.current_user(request)
+
+
+@app.post("/api/panel/torneos")
+async def panel_create_tournament(request: Request):
+    """Crear torneo/liga desde el panel."""
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    if not _panel_user_or_none(request):
+        return HTMLResponse("<h3>❌ Inicia sesión.</h3><a href='/panel/login'>→ Entrar</a>",
+                            status_code=403)
+    form = await request.form()
+    players = [ln for ln in (form.get("players") or "").splitlines() if ln.strip()]
+    if len(players) < 3 or not (form.get("name") or "").strip():
+        return HTMLResponse("<h3>❌ Pon un nombre y al menos 3 participantes.</h3>"
+                            "<a href='/panel'>← Volver</a>", status_code=400)
+    tid = tournaments.create((form.get("name") or "").strip(),
+                             form.get("sport") or "padel",
+                             form.get("fmt") or "grupos", players)
+    return RedirectResponse(f"/panel/torneo/{tid}", status_code=302)
+
+
+@app.get("/panel/torneo/{tid}", response_class=HTMLResponse)
+async def panel_tournament_detail(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    if not _panel_user_or_none(request):
+        return RedirectResponse("/panel/login", status_code=302)
+    t = tournaments.get(tid)
+    if not t:
+        return HTMLResponse("<h3>Torneo no encontrado.</h3><a href='/panel'>← Volver</a>",
+                            status_code=404)
+    return HTMLResponse(tournaments.render_detail(t))
+
+
+@app.post("/api/panel/torneos/{tid}/score")
+async def panel_tournament_score(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    if not _panel_user_or_none(request):
+        return RedirectResponse("/panel/login", status_code=302)
+    form = await request.form()
+    try:
+        tournaments.set_score(tid, int(form.get("g")), int(form.get("f")),
+                              int(form.get("sa")), int(form.get("sb")))
+    except (TypeError, ValueError):
+        pass
+    return RedirectResponse(f"/panel/torneo/{tid}", status_code=302)
+
+
+@app.post("/api/panel/torneos/{tid}/bracket")
+async def panel_tournament_bracket(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    if not _panel_user_or_none(request):
+        return RedirectResponse("/panel/login", status_code=302)
+    tournaments.gen_bracket(tid)
+    return RedirectResponse(f"/panel/torneo/{tid}", status_code=302)
+
+
+@app.post("/api/panel/torneos/{tid}/winner")
+async def panel_tournament_winner(request: Request, tid: int):
+    from fastapi.responses import RedirectResponse
+    from api import tournaments
+    if not _panel_user_or_none(request):
+        return RedirectResponse("/panel/login", status_code=302)
+    form = await request.form()
+    try:
+        tournaments.set_winner(tid, int(form.get("r")), int(form.get("m")),
+                               int(form.get("w")))
+    except (TypeError, ValueError):
+        pass
+    return RedirectResponse(f"/panel/torneo/{tid}", status_code=302)
 
 
 @app.post("/api/panel/cancel")
