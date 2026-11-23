@@ -219,6 +219,10 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
                         f"😉 Ya estabas apuntado al partido de {booker}. ¡Nos vemos!")
                     return
                 customers.add_guest(mid, guest_name or "Invitado", wa_phone, row.get("phone10") or "")
+                try:
+                    await playtomic.add_guest_player(mid, guest_name or "Invitado", wa_phone)
+                except Exception as e:
+                    logger.error(f"playtomic add guest failed: {e}")
                 # Hora local legible
                 cuando = ""
                 try:
@@ -446,6 +450,10 @@ async def _handle_add_guests(phone_id, token, to, club_id, text, message, data):
     for name, phone in _parse_shared_contacts(message):
         if customers.add_guest(match_id, name, phone, to):
             added.append(name)
+            try:
+                await playtomic.add_guest_player(match_id, name, phone)
+            except Exception as e:
+                logger.error(f"playtomic add guest failed: {e}")
     # b) Texto "Nombre 8341234567"
     if not added and text:
         digits = "".join(ch for ch in text if ch.isdigit())
@@ -453,6 +461,10 @@ async def _handle_add_guests(phone_id, token, to, club_id, text, message, data):
         if len(digits) >= 10 and len(name) >= 2:
             if customers.add_guest(match_id, name, digits, to):
                 added.append(name.title())
+                try:
+                    await playtomic.add_guest_player(match_id, name, digits)
+                except Exception as e:
+                    logger.error(f"playtomic add guest failed: {e}")
 
     if added:
         count += len(added)
@@ -795,7 +807,7 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
             data["duration"] = c["duration"]
             data["start_iso"] = c["start_iso"]
             _set_state(club_id, to, "confirming", data)
-            await _send_confirmation(phone_id, token, to, data)
+            await _handle_confirm(phone_id, token, to, club_id, "", "btn_confirm_yes", data)
             return
 
         rows = []
@@ -834,7 +846,7 @@ async def _handle_time_chosen(phone_id, token, to, club_id, text, button_id, dat
         data["price_cents"] = court["price_cents"]
         data["court_type"] = court["court_type"]
         _set_state(club_id, to, "confirming", data)
-        await _send_confirmation(phone_id, token, to, data)
+        await _handle_confirm(phone_id, token, to, club_id, "", "btn_confirm_yes", data)
         return
 
     rows = []
@@ -874,7 +886,7 @@ async def _handle_court_chosen(phone_id, token, to, club_id, text, button_id, da
             data["duration"] = c["duration"]
             data["start_iso"] = c["start_iso"]
             _set_state(club_id, to, "confirming", data)
-            await _send_confirmation(phone_id, token, to, data)
+            await _handle_confirm(phone_id, token, to, club_id, "", "btn_confirm_yes", data)
             return
 
     # ── INTERNAL DB MODE (original) ──

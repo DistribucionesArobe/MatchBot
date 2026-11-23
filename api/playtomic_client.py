@@ -1341,6 +1341,65 @@ class PlaytomicClient:
 
         logger.warning(f"Could not add player to match {match_id} via any endpoint")
 
+    async def add_guest_player(self, match_id: str, name: str,
+                               phone: str = "") -> bool:
+        """Agrega un COMPAÑERO a una reserva existente para que aparezca en
+        el Manager de Playtomic. Siempre como guest con id de 4 partes
+        (guest:{tenant}:{ts}:{hex}) — NUNCA ligar user_id numérico aquí
+        (eso corrompe el detalle del Manager). Elige el equipo con lugar."""
+        await self.ensure_tenant_auth()
+        if not self.tenant_token:
+            return False
+        headers = {
+            "Authorization": f"Bearer {self.tenant_token}",
+            "Content-Type": "application/json",
+            "x-requested-with": "com.playtomic.manager 1.299.0+build.5655",
+            "x-authorization-scope": f"tenant:{TENANT_ID}",
+        }
+        # Equipo con espacio libre
+        team_id = "0"
+        try:
+            m = await self.get_match(match_id)
+            if m:
+                sport = str(m.get("sport_id", "PADEL")).upper()
+                max_per = 7 if "FOOT" in sport else 2
+                teams = m.get("teams", []) or []
+                sizes = {str(t.get("team_id", i)): len(t.get("players", []) or [])
+                         for i, t in enumerate(teams)}
+                for tid_ in ("0", "1"):
+                    if sizes.get(tid_, 0) < max_per:
+                        team_id = tid_
+                        break
+        except Exception as e:
+            logger.warning(f"add_guest_player team pick: {e}")
+
+        display = (name or "Invitado").strip()[:60]
+        digits = "".join(c for c in (phone or "") if c.isdigit())[-10:]
+        if digits:
+            display = f"{display} ({digits})"
+        guest_id = f"guest:{TENANT_ID}:{int(time.time() * 1000)}:{uuid.uuid4().hex[:8]}"
+        payload = {"name": display, "merchant_player_id": guest_id,
+                   "team_id": team_id}
+        try:
+            r = await self.client.post(
+                f"{MANAGER_API}/v1/matches/{match_id}/players",
+                headers=headers, json=payload)
+            logger.info(f"add_guest_player {match_id}: {r.status_code} {r.text[:200]}")
+            if r.status_code in (401, 403):
+                self.token = None
+                self.tenant_token = None
+                await self.login()
+                await self.get_tenant_token()
+                headers["Authorization"] = f"Bearer {self.tenant_token}"
+                r = await self.client.post(
+                    f"{MANAGER_API}/v1/matches/{match_id}/players",
+                    headers=headers, json=payload)
+                logger.info(f"add_guest_player retry: {r.status_code}")
+            return r.status_code in (200, 201)
+        except Exception as e:
+            logger.error(f"add_guest_player failed: {e}")
+            return False
+
     # ─── LIST MATCHES (for admin/cleanup) ───
     async def get_match(self, match_id: str) -> dict | None:
         """Fetch a single match by id (for status checks)."""

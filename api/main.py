@@ -1474,6 +1474,10 @@ async def game_invite_join(request: Request, match_id: str):
     if not okk:
         return HTMLResponse(_game_page(match_id,
             "Revisa tu nombre y celular (10 dígitos).", False))
+    try:
+        await playtomic.add_guest_player(match_id, name, phone)
+    except Exception as e:
+        logger.error(f"playtomic add guest (web) failed: {e}")
     # Avisar al que reservó
     try:
         from api.promos import send_alert
