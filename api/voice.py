@@ -213,11 +213,14 @@ async def reservar(playtomic, raw_date: str, time_str: str,
         _tok = os.getenv("WHATSAPP_TOKEN", "")
         _mid = result.get("match_id", "")
         if _pid and _tok and _mid:
-            base = os.getenv("PUBLIC_BASE_URL", "https://matchbot.live")
+            import urllib.parse as _up
+            bot_num = os.getenv("BOT_WA_NUMBER", "5218344279182")
+            texto = _up.quote(f"Me apunto 🎾 J-{_mid[:8]}")
             await _sa(_pid, _tok, telefono,
                 f"✅ *Reserva confirmada por llamada* 🎾\n\n"
-                f"👥 Comparte este link en tu grupo para que tus compañeros "
-                f"se apunten solos:\n🔗 {base}/j/{_mid}")
+                f"👥 Comparte este link en tu grupo — quien lo abra solo pica "
+                f"*enviar* y queda apuntado:\n"
+                f"🔗 https://wa.me/{bot_num}?text={texto}")
     except Exception as e:
         logger.error(f"voice share link failed: {e}")
 
