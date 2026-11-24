@@ -178,7 +178,7 @@ def clientes_html() -> str:
                    COALESCE(c.bookings_count, 0) AS reservas,
                    c.last_booking_at AS ultima,
                    COALESCE(l.sellos, 0) AS sellos_total
-            FROM customers c
+            FROM club_customers c
             LEFT JOIN (
                 SELECT RIGHT(wa_phone, 10) AS p10,
                        COUNT(*) FILTER (WHERE status='stamped') AS sellos
@@ -415,8 +415,8 @@ def reportes_html(all_rows: list = None, courts: list = None) -> str:
     ]
 
     # ── Clientes y lealtad ──
-    nuevos_mes = _q("SELECT COUNT(*) AS n FROM customers WHERE created_at >= date_trunc('month', NOW())").get("n", 0)
-    registrados = _q("SELECT COUNT(*) AS n FROM customers WHERE name IS NOT NULL").get("n", 0)
+    nuevos_mes = _q("SELECT COUNT(*) AS n FROM club_customers WHERE created_at >= date_trunc('month', NOW())").get("n", 0)
+    registrados = _q("SELECT COUNT(*) AS n FROM club_customers WHERE name IS NOT NULL").get("n", 0)
     jugadas = _q("SELECT COUNT(*) AS n FROM loyalty_bookings WHERE status='stamped'").get("n", 0)
     premios = _q("SELECT COUNT(*) AS n FROM loyalty_rewards").get("n", 0)
     cards2 = [
@@ -463,7 +463,7 @@ def reportes_html(all_rows: list = None, courts: list = None) -> str:
         tops = execute("""
             SELECT c.name, c.phone10, COUNT(lb.id) AS n
             FROM loyalty_bookings lb
-            JOIN customers c ON c.phone10 = RIGHT(lb.wa_phone, 10)
+            JOIN club_customers c ON c.phone10 = RIGHT(lb.wa_phone, 10)
             WHERE lb.created_at >= date_trunc('month', NOW())
               AND lb.status <> 'cancelled'
             GROUP BY c.name, c.phone10 ORDER BY n DESC LIMIT 8

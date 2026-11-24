@@ -28,7 +28,7 @@ def phone10(phone: str) -> str:
 
 def ensure_table():
     execute("""
-        CREATE TABLE IF NOT EXISTS customers (
+        CREATE TABLE IF NOT EXISTS club_customers (
             phone10 TEXT PRIMARY KEY,
             wa_phone TEXT,
             name TEXT,
@@ -80,7 +80,7 @@ def get(phone: str) -> dict | None:
     key = phone10(phone)
     if not key:
         return None
-    row = execute("SELECT * FROM customers WHERE phone10=%s", [key], fetch_one=True)
+    row = execute("SELECT * FROM club_customers WHERE phone10=%s", [key], fetch_one=True)
     return dict(row) if row else None
 
 
@@ -96,7 +96,7 @@ def save_name(phone: str, name: str, source: str = "chat"):
         return
     try:
         execute("""
-            INSERT INTO customers (phone10, wa_phone, name, source)
+            INSERT INTO club_customers (phone10, wa_phone, name, source)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (phone10) DO UPDATE
             SET name=EXCLUDED.name, wa_phone=EXCLUDED.wa_phone, updated_at=NOW()
@@ -111,7 +111,7 @@ def save_birthday(phone: str, birthday: str):
     if not key:
         return
     try:
-        execute("UPDATE customers SET birthday=%s, updated_at=NOW() WHERE phone10=%s",
+        execute("UPDATE club_customers SET birthday=%s, updated_at=NOW() WHERE phone10=%s",
                 [birthday, key])
     except Exception as e:
         logger.error(f"customers save_birthday failed: {e}")
@@ -143,10 +143,10 @@ def touch_booking(phone: str, source: str = "chat"):
         return
     try:
         execute("""
-            INSERT INTO customers (phone10, wa_phone, source, bookings_count, last_booking_at)
+            INSERT INTO club_customers (phone10, wa_phone, source, bookings_count, last_booking_at)
             VALUES (%s, %s, %s, 1, NOW())
             ON CONFLICT (phone10) DO UPDATE
-            SET bookings_count = customers.bookings_count + 1,
+            SET bookings_count = club_customers.bookings_count + 1,
                 last_booking_at = NOW(), updated_at = NOW()
         """, [key, phone, source])
     except Exception as e:
@@ -185,7 +185,7 @@ def today_birthdays() -> list[dict]:
     today = f"{now.day:02d}/{now.month:02d}"
     try:
         rows = execute("""
-            SELECT * FROM customers
+            SELECT * FROM club_customers
             WHERE birthday=%s AND name IS NOT NULL
               AND (last_bday_greet IS NULL OR last_bday_greet < %s)
         """, [today, now.year], fetch_all=True) or []
@@ -198,7 +198,7 @@ def today_birthdays() -> list[dict]:
 def mark_bday_greeted(phone10_key: str):
     now = datetime.utcnow() + timedelta(hours=OFFSET)
     try:
-        execute("UPDATE customers SET last_bday_greet=%s WHERE phone10=%s",
+        execute("UPDATE club_customers SET last_bday_greet=%s WHERE phone10=%s",
                 [now.year, phone10_key])
     except Exception as e:
         logger.error(f"customers mark_bday_greeted failed: {e}")
