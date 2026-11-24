@@ -1912,6 +1912,49 @@ async def panel_save_settings(request: Request):
                         f"<a href='/panel'>← Volver al panel</a>")
 
 
+@app.get("/api/debug/apunto")
+async def debug_apunto(request: Request, code: str = Query(""),
+                       phone: str = Query("")):
+    """Diagnóstico del flujo 'me apunto' paso a paso (X-Voice-Key)."""
+    from api import voice, customers
+    import traceback
+    if not voice._auth_ok(request):
+        raise HTTPException(403, "X-Voice-Key invalida")
+    out = {}
+    try:
+        row = execute(
+            "SELECT match_id, phone10, customer_name, court, start_utc, status "
+            "FROM bookings_mirror WHERE match_id LIKE %s "
+            "ORDER BY created_at DESC LIMIT 1", [code + "%"], fetch_one=True)
+        out["paso1_mirror"] = dict(row) if row else "NO ENCONTRADO"
+        if row:
+            out["paso1_tipos"] = {k: type(v).__name__ for k, v in dict(row).items()}
+    except Exception:
+        out["paso1_mirror_ERROR"] = traceback.format_exc()[-800:]
+        return out
+    try:
+        p10 = customers.phone10(phone or "5218118001161")
+        out["paso2_phone10"] = p10
+        ya = execute("SELECT 1 FROM booking_guests WHERE match_id=%s AND phone10=%s",
+                     [row["match_id"] if row else "", p10], fetch_one=True)
+        out["paso3_ya_apuntado"] = bool(ya)
+    except Exception:
+        out["paso3_ERROR"] = traceback.format_exc()[-800:]
+        return out
+    try:
+        out["paso4_registered"] = customers.registered_name(phone or "5218118001161")
+    except Exception:
+        out["paso4_ERROR"] = traceback.format_exc()[-800:]
+    try:
+        from datetime import timedelta as _td
+        if row and row.get("start_utc"):
+            loc = row["start_utc"] + _td(hours=int(os.getenv("CLUB_UTC_OFFSET", "-6")))
+            out["paso5_cuando"] = loc.strftime("%a %d %H:%M")
+    except Exception:
+        out["paso5_ERROR"] = traceback.format_exc()[-800:]
+    return out
+
+
 @app.get("/api/mirror/status")
 async def mirror_status():
     """Estado del espejo local de reservas."""
