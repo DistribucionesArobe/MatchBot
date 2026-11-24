@@ -1918,7 +1918,9 @@ async def debug_apunto(request: Request, code: str = Query(""),
     """Diagnóstico del flujo 'me apunto' paso a paso (X-Voice-Key)."""
     from api import voice, customers
     import traceback
-    if not voice._auth_ok(request):
+    qkey = request.query_params.get("key", "")
+    if not (voice._auth_ok(request)
+            or (qkey and qkey == os.getenv("VOICE_API_KEY", ""))):
         raise HTTPException(403, "X-Voice-Key invalida")
     out = {}
     try:
