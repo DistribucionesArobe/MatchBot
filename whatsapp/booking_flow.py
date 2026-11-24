@@ -191,9 +191,13 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
 
         # ── ME APUNTO (link de equipo: detecta número y nombre solos) ──
         if "me apunto" in text_lower and "j-" in text_lower:
-            import re as _re
-            mcode = _re.search(r"j-([0-9a-f]{6,12})", text_lower)
-            if mcode:
+            try:
+                import re as _re
+                mcode = _re.search(r"j-([0-9a-f]{6,12})", text_lower)
+                if not mcode:
+                    await send_text(phone_id, token, wa_phone,
+                        "😕 No leí el código del partido. Pide el link de nuevo.")
+                    return
                 code = mcode.group(1)
                 row = execute(
                     "SELECT match_id, phone10, customer_name, court, start_utc, status "
@@ -207,51 +211,59 @@ async def handle_message(club: dict, wa_phone: str, message: dict, profile_name:
                     await send_text(phone_id, token, wa_phone,
                         "⚠️ Ese partido fue cancelado.")
                     return
-                guest_name = (customers.registered_name(wa_phone)
-                              or profile_name or "").strip()
-                booker = (row.get("customer_name") or "tu amigo").split("(")[0].strip()
                 mid = row["match_id"]
                 ya = execute(
                     "SELECT 1 FROM booking_guests WHERE match_id=%s AND phone10=%s",
                     [mid, customers.phone10(wa_phone)], fetch_one=True)
+                booker = (row.get("customer_name") or "tu amigo").split("(")[0].strip()
                 if ya:
                     await send_text(phone_id, token, wa_phone,
                         f"😉 Ya estabas apuntado al partido de {booker}. ¡Nos vemos!")
                     return
-                customers.add_guest(mid, guest_name or "Invitado", wa_phone, row.get("phone10") or "")
-                try:
-                    await playtomic.add_guest_player(mid, guest_name or "Invitado", wa_phone)
-                except Exception as e:
-                    logger.error(f"playtomic add guest failed: {e}")
-                # Hora local legible
+                guest_name = (customers.registered_name(wa_phone)
+                              or profile_name or "").strip()
                 cuando = ""
                 try:
                     from datetime import timedelta as _tdx
-                    loc = row["start_utc"] + _tdx(hours=CLUB_UTC_OFFSET)
-                    cuando = f" del {DAY_NAMES[loc.weekday()]} {loc.day} a las {loc.strftime('%H:%M')}"
+                    if row.get("start_utc"):
+                        loc = row["start_utc"] + _tdx(hours=CLUB_UTC_OFFSET)
+                        cuando = (f" del {DAY_NAMES[loc.weekday()]} {loc.day} "
+                                  f"a las {loc.strftime('%H:%M')}")
                 except Exception:
                     pass
+                # 1) RESPONDER PRIMERO (que nunca quede en silencio)
                 await send_text(phone_id, token, wa_phone,
                     f"✅ *¡Apuntado al partido de {booker}{cuando}!* 🎾\n"
                     f"🏟️ {row.get('court') or ''}\n\n"
-                    f"Cada partido que juegues suma sellos 🎟️ — escribe *sellos* "
-                    f"para ver tu tarjeta.")
-                # Avisar al que reservó
+                    f"Escribe *sellos* para ver tu tarjeta de cliente.")
+                # 2) Registrar en la base + Playtomic + avisar al que reservó
+                try:
+                    customers.add_guest(mid, guest_name or "Invitado", wa_phone,
+                                        row.get("phone10") or "")
+                except Exception as e:
+                    logger.error(f"me-apunto add_guest: {e}")
+                try:
+                    await playtomic.add_guest_player(mid, guest_name or "Invitado", wa_phone)
+                except Exception as e:
+                    logger.error(f"me-apunto playtomic: {e}")
                 try:
                     bp = row.get("phone10") or ""
-                    if len(bp) == 10:
+                    if len(bp) == 10 and customers.phone10(wa_phone) != bp:
                         await send_text(phone_id, token, "52" + bp,
                             f"🎾 *{guest_name or 'Alguien'}* ya se apuntó a tu partido. "
                             f"¡Equipo armado!")
                 except Exception as e:
-                    logger.error(f"me-apunto notify failed: {e}")
-                # Si no está registrado, pedir su nombre (registro normal)
+                    logger.error(f"me-apunto notify: {e}")
                 if not customers.registered_name(wa_phone):
                     _set_state(club_id, wa_phone, "reg_name", {})
                     await send_text(phone_id, token, wa_phone,
                         "📇 Para registrarte como cliente del club, "
                         "¿cuál es tu *nombre completo*?")
-                return
+            except Exception as e:
+                logger.error(f"me-apunto handler failed: {e}", exc_info=True)
+                await send_text(phone_id, token, wa_phone,
+                    "😕 Algo falló al apuntarte. Intenta de nuevo en un momento.")
+            return
 
         # ── TORNEOS Y LIGAS ──
         if text_lower in ("torneo", "torneos", "liga", "ligas", "crear torneo"):
@@ -389,17 +401,11 @@ async def _handle_reg_birthday(phone_id, token, to, club_id, text, data):
 
 def _share_link_msg(match_id: str) -> str:
     bot_num = os.getenv("BOT_WA_NUMBER", "5218344279182")
-    code = (match_id or "")[:8]
     import urllib.parse as _up
-    texto = _up.quote(f"Me apunto 🎾 J-{code}")
-    link = f"https://wa.me/{bot_num}?text={texto}"
-    return ("👥 *¡Arma tu equipo!*\n\n"
-            "Comparte este link en tu grupo — quien lo abra solo tiene que "
-            "picar *enviar* y queda apuntado automáticamente (detecto su "
-            "número y su nombre):\n\n"
-            f"🔗 {link}\n\n"
-            "Te aviso aquí cada que alguien se apunte. "
-            "Todos acumulan sellos 🎟️")
+    texto = _up.quote(f"Me apunto \U0001F3BE J-{(match_id or '')[:8]}")
+    return ("\U0001F465 *Invita a tu equipo* — comparte este link "
+            "(ellos solo pican enviar):\n"
+            f"\U0001F517 https://wa.me/{bot_num}?text={texto}")
 
 
 async def _finish_reg_then_guests(phone_id, token, to, club_id, data, prefix):
